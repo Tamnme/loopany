@@ -3,3 +3,9 @@ current_exercise
 clean1
 lint1
 stale1
+answered_between1
+cap1
+cap2
+cap3
+cap4
+cap5

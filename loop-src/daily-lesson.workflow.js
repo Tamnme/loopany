@@ -135,12 +135,24 @@ try {
 // Which exercises the owner actually worked on since the last lesson. BOTH conditions are
 // required: the done list alone cannot tell yesterday's work from last week's, and mtime
 // alone would surface a file they opened but never got passing.
-// The cutoff is the previous lesson file's own mtime — literally "when the last lesson was
-// issued" — which avoids any timezone arithmetic against the 09:00 Asia/Saigon fire time.
+// The cutoff is the previous lesson file's own BIRTHTIME, not its mtime. The lesson file gets
+// rewritten after it is issued — twice over: the next run's grading pass flips its `type:`
+// front-matter, and the owner's lesson page writes their typed answers back into the same
+// file at any hour. mtime therefore means "last touched", not "when issued": if the owner
+// does rustlings work at 20:00 and then answers Track B at 22:00, an mtime cutoff would move
+// to 22:00 and silently drop their 20:00 work. Birthtime is safe here specifically because
+// this pre-fetch runs BEFORE grading — at this point the previous lesson has not yet been
+// rewritten, so its birthtime still reflects its issue time. (A later grading pass resets
+// birthtime, which is exactly why this is only trustworthy for the not-yet-graded previous
+// lesson, never for older history entries.)
+// Fall back to mtime when birthtime is absent/zero or reports later than mtime — some
+// filesystems don't record birthtime at all and report garbage instead.
 let since = 0;
 if (prevName) {
   try {
-    since = (await fs.stat(lessonsDir + '/' + prevName)).mtimeMs;
+    const st = await fs.stat(lessonsDir + '/' + prevName);
+    since = st.birthtimeMs;
+    if (!since || since > st.mtimeMs) since = st.mtimeMs;
   } catch (e) {
     since = 0; // unreadable — fall through to reviewing nothing rather than everything
   }

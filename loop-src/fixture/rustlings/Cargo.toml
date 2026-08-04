@@ -5,6 +5,20 @@ bin = [
   { name = "lint1_sol", path = "solutions/01_demo/lint1.rs" },
   { name = "stale1", path = "exercises/01_demo/stale1.rs" },
   { name = "stale1_sol", path = "solutions/01_demo/stale1.rs" },
+  { name = "answered_between1", path = "exercises/01_demo/answered_between1.rs" },
+  { name = "answered_between1_sol", path = "solutions/01_demo/answered_between1.rs" },
+  { name = "undone1", path = "exercises/01_demo/undone1.rs" },
+  { name = "undone1_sol", path = "solutions/01_demo/undone1.rs" },
+  { name = "cap1", path = "exercises/01_demo/cap1.rs" },
+  { name = "cap1_sol", path = "solutions/01_demo/cap1.rs" },
+  { name = "cap2", path = "exercises/01_demo/cap2.rs" },
+  { name = "cap2_sol", path = "solutions/01_demo/cap2.rs" },
+  { name = "cap3", path = "exercises/01_demo/cap3.rs" },
+  { name = "cap3_sol", path = "solutions/01_demo/cap3.rs" },
+  { name = "cap4", path = "exercises/01_demo/cap4.rs" },
+  { name = "cap4_sol", path = "solutions/01_demo/cap4.rs" },
+  { name = "cap5", path = "exercises/01_demo/cap5.rs" },
+  { name = "cap5_sol", path = "solutions/01_demo/cap5.rs" },
 ]
 
 [package]

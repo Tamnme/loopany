@@ -202,24 +202,32 @@ each carrying `{code, message, line, level: 'warning' | 'error'}`. Turn it into 
 
 - **Deep-review exactly one**, chosen in this order: the exercise with clippy warnings;
   failing that, the one whose code diverges most from the official solution; failing that,
-  the newest. Say what they did well, give **one** concrete improvement as rewritten lines,
-  and note how the official solution differs *only where it genuinely does*. These files are
-  five lines — a mechanical diff teaches nothing.
+  the newest. An exercise with any `level: 'error'` finding outranks one with only warnings
+  when choosing this single slot. Say what they did well, give **one** concrete improvement as
+  rewritten lines, and note how the official solution differs *only where it genuinely does*.
+  These files are five lines — a mechanical diff teaches nothing.
 - **One line each** for the rest.
 - **`level` splits findings into two different things — never blur them together.**
-  `level: 'error'` is clippy's `correctness` group, which is deny-by-default: it means clippy
-  genuinely **rejected** the code. rustlings passing an exercise says nothing about clippy
-  accepting it, so this is reachable on a "done" exercise — lead with these, name them as
-  real defects, never mix them in among the style notes. `level: 'warning'` is pedantic idiom
-  advice: a tidier way to write something the compiler already accepted. Explain the rule and
-  show the tidier form — the owner did nothing wrong, so don't frame it as a mistake.
-- **Quote clippy lints by name** (`clippy::needless_return`) and explain why the rule exists.
-  Clippy establishes *that* something is off; the lesson explains *why*.
+  `level: 'error'` means the compiler or clippy genuinely **rejected** something: clippy's own
+  deny-by-default `correctness` group, one of rustlings' own forbidden/denied lints (its
+  `Cargo.toml` sets `unsafe_code` and `clippy::todo`/`empty_loop` to forbid, `infinite_loop`
+  and `mem_forget` to deny), or a bare rustc compile-error code (e.g. `E0061`) — rustlings
+  passing an exercise says nothing about any of these, so this is reachable on a "done"
+  exercise. Lead with these, name them as real defects, never mix them in among the style
+  notes. `level: 'warning'` is pedantic idiom advice: a tidier way to write something the
+  compiler already accepted. Explain the rule and show the tidier form — the owner did nothing
+  wrong, so don't frame it as a mistake.
+- **Quote each finding's `code` exactly as given.** Most are clippy lints
+  (`clippy::needless_return`), but a `level: 'error'` entry can equally be a rustlings-forbidden
+  lint or a bare rustc error code (`E0061`) — never assume or add a `clippy::` prefix that
+  isn't there. The code establishes *that* something is off; the lesson explains *why*.
 - **`clippy.ok: false` means unknown, never clean.** Say nothing about lints for that
   exercise rather than implying it passed.
-- **Findings arrive already capped at 10 per exercise, error-level entries first** — don't
-  re-truncate. A second cap here could drop an error-level finding the first one deliberately
-  kept ahead of the warnings. Show fewer than 10 only for prose reasons, never by slicing.
+- **Findings arrive already capped at 10 per exercise — error-level entries are never dropped
+  in favour of warnings, but the array is NOT re-sorted by level.** It stays in clippy's own
+  emission order (which tracks line order in the file), so sort or partition by `level`
+  yourself if you want errors presented before warnings in the block — don't assume position
+  implies severity. Show fewer than 10 only for prose reasons, never by slicing.
 - **Omit the whole block when there is nothing worth saying — the most important line here.**
   Pedantic is chatty, so the temptation to always have something to say is real; repeating the
   same lint every day is the same failure as writing "looks good!" — both train the owner to
@@ -268,20 +276,24 @@ each carrying `{code, message, line, level: 'warning' | 'error'}`. Turn it into 
 - **Code feedback is pre-fetched too, and clippy runs at pedantic level on purpose.**
   `reviewed_exercises` carries the owner's code, the official `solutions/<sec>/<name>.rs`,
   and `cargo clippy --bin <name> --message-format=json -- -W clippy::pedantic` findings
-  (`{code, message, line, level}`, capped at 10 per exercise, errors before warnings), for up
-  to 5 exercises that are both in `rustlings.done` **and** modified since the previous lesson
-  file's mtime. Never re-read those files or re-run clippy by hand. **Pedantic is on because
-  default clippy produced zero findings across all 17 exercises the owner had completed as of
-  2026-08-04** (`intro1..2`, `variables1..6`, `functions1..5`, `if1..3`, `quiz1`) — default
-  alone would have made this feature silent for weeks. Real pedantic output on that same tree:
-  `if1` → `clippy::semicolon_if_nothing_returned` and `clippy::uninlined_format_args`; `quiz1`
-  → `clippy::uninlined_format_args`. `level: 'error'` is clippy's deny-by-default
-  `correctness` group — a genuine rejection, distinct from the idiom-advice `warning` level —
-  because rustlings passing an exercise says nothing about clippy accepting it. Verified
-  2026-08-04: scoped clippy is 0.35s, cargo replays cached diagnostics (so no cache-busting is
-  needed), and `rustlings/` has **no git baseline** — the official solution is the only
-  reference, there is no diff against the owner's earlier attempt. **Don't simplify pedantic
-  back to default** — that would silently kill the feature again.
+  (`{code, message, line, level}`, capped at 10 per exercise — errors never dropped in favour
+  of warnings, but the array is otherwise in clippy's own emission order, not re-sorted), for
+  up to 5 exercises that are both in `rustlings.done` **and** modified since the previous
+  lesson file's **birthtime** (not its mtime — the lesson file gets rewritten after issue, so
+  mtime means "last touched", not "when issued"; see the gotcha below). Never re-read those
+  files or re-run clippy by hand. **Pedantic is on because default clippy produced zero
+  findings across all 17 exercises the owner had completed as of 2026-08-04**
+  (`intro1..2`, `variables1..6`, `functions1..5`, `if1..3`, `quiz1`) — default alone would have
+  made this feature silent for weeks. Real pedantic output on that same tree: `if1` →
+  `clippy::semicolon_if_nothing_returned` and `clippy::uninlined_format_args`; `quiz1` →
+  `clippy::uninlined_format_args`. `level: 'error'` means the compiler or clippy genuinely
+  rejected something — clippy's own deny-by-default `correctness` group, one of rustlings'
+  forbidden/denied lints, or a bare rustc compile-error code — distinct from the idiom-advice
+  `warning` level, because rustlings passing an exercise says nothing about any of those.
+  Verified 2026-08-04: scoped clippy is 0.35s, cargo replays cached diagnostics (so no
+  cache-busting is needed), and `rustlings/` has **no git baseline** — the official solution
+  is the only reference, there is no diff against the owner's earlier attempt. **Don't
+  simplify pedantic back to default** — that would silently kill the feature again.
 - **Fallback grading commands.** rustlings is **6.5.0 — there is no `rustlings list`.**
   When the pre-fetched data is missing, `cd rustlings && rustlings check-all 2>&1 | tail -3`
   recompiles everything non-interactively and prints `N/94 exercises pending`. It emits
@@ -338,10 +350,11 @@ each carrying `{code, message, line, level: 'warning' | 'error'}`. Turn it into 
     clean, not an artifact of a weaker check. Expect pedantic to be chattier than default; the
     silence rule (Spec, above) is what keeps that from becoming noise.
   - **`level: 'error'` and `level: 'warning'` are not the same finding dressed differently.**
-    Error means clippy's deny-by-default `correctness` group rejected the code — a real
-    defect, reachable even on a rustlings-passing exercise. Warning is pedantic idiom advice
-    on code the compiler already accepted. Collapsing them into one undifferentiated list is
-    the one mistake to avoid here.
+    Error means the compiler or clippy genuinely rejected the code — clippy's own
+    deny-by-default `correctness` group, one of rustlings' forbidden/denied lints, or a bare
+    rustc compile-error code, not only a clippy lint — a real defect, reachable even on a
+    rustlings-passing exercise. Warning is pedantic idiom advice on code the compiler already
+    accepted. Collapsing them into one undifferentiated list is the one mistake to avoid here.
 
 ## Timeline
 

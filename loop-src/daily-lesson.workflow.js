@@ -235,12 +235,22 @@ const parseClippyJson = (text) => {
   return out;
 };
 
+// The loopany host kills the WHOLE workflow — not just this block — after
+// LOOPANY_WORKFLOW_TIMEOUT_SECONDS, which defaults to 30s (@crewlet/loopany/dist/workflow.js;
+// the LaunchAgent plist sets only PATH, so the default stands). 120000ms could never actually
+// fire before that host cap does, so a single `cargo clippy` stuck on e.g. rustlings' own
+// build-directory lock used to cost the entire prefetch — prev_lesson, history, due_review,
+// streak, cargo, all of it — not just this feedback block. 8s keeps one stuck call from doing
+// that while staying >20x the ~0.35s a real scoped clippy run takes. Do NOT raise this back
+// toward "generous" — that silently reopens the same failure.
+const CLIPPY_TIMEOUT_MS = 8000;
+
 const clippyFor = async (name) => {
   try {
     const res = await run(
       'cargo',
       ['clippy', '--quiet', '--message-format=json', '--bin', name, ...PEDANTIC_ARGS],
-      { cwd: base + '/rustlings', timeout: 120000, maxBuffer: 8e6 },
+      { cwd: base + '/rustlings', timeout: CLIPPY_TIMEOUT_MS, maxBuffer: 8e6 },
     );
     return { ok: true, warnings: capWarnings(parseClippyJson(res.stdout + res.stderr)) };
   } catch (e) {
@@ -273,8 +283,21 @@ const compileErrors = out.split('\n').filter((l) => l.startsWith('error')).slice
 
 // The official solution path mirrors the exercise path — rustlings keeps the two trees
 // parallel, so swapping the prefix is exact, not a guess.
+//
+// This loop is the only place in the workflow that can run up to 5 SEQUENTIAL external
+// commands (one clippy invocation per exercise), so it gets its own wall-clock budget on top
+// of CLIPPY_TIMEOUT_MS above — the same 30s loopany host cap applies to the whole workflow,
+// not just this block, so a run that blows its budget here doesn't get partial feedback, it
+// loses prev_lesson/history/due_review/streak/cargo too. 15s (half the host's cap) leaves
+// headroom for everything else the workflow does before and after this loop; if the budget is
+// already spent, stop adding entries and hand over whatever was gathered — partial feedback,
+// or none, is always better than losing the entire prefetch. Never make this loop the reason
+// the whole run fails.
+const ASSEMBLY_DEADLINE_MS = 15000;
+const assemblyStart = Date.now();
 const reviewedExercises = [];
 for (const name of selected) {
+  if (Date.now() - assemblyStart >= ASSEMBLY_DEADLINE_MS) break;
   const rel = binMap[name];
   // selected is already filtered against this same binMap above, so rel should never be
   // missing here — but that is an invariant held ACROSS two separate loops with nothing

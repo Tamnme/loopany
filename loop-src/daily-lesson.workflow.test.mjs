@@ -152,6 +152,9 @@ test('workflow hands the run a payload with the fields the brief depends on', as
 test('reviewed_exercises is present and well-shaped', async () => {
   const p = await runWorkflow();
   assert.ok(Array.isArray(p.reviewed_exercises), 'reviewed_exercises must be an array');
+  // The fixture yields 2 qualifying candidates (clean1, lint1) at minimum — a test that
+  // tolerates length === 0 would pass even if the assembly loop silently produced nothing.
+  assert.ok(p.reviewed_exercises.length > 0, 'reviewed_exercises must not be empty for this fixture');
   assert.ok(p.reviewed_exercises.length <= 5, 'cap of 5 exceeded');
   for (const e of p.reviewed_exercises) {
     assert.equal(typeof e.name, 'string');
@@ -162,6 +165,44 @@ test('reviewed_exercises is present and well-shaped', async () => {
   }
 });
 
+test('each reviewed exercise carries the owner code AND the official solution', async () => {
+  const p = await runWorkflow();
+  // Populated, not vacuous: with clean1 + lint1 (at minimum) qualifying, an empty array here
+  // would mean the assembly loop silently produced nothing.
+  assert.ok(p.reviewed_exercises.length > 0, 'reviewed_exercises must not be empty for this fixture');
+  for (const e of p.reviewed_exercises) {
+    assert.match(e.path, /^exercises\//, 'path must be the exercise, not the solution');
+    assert.ok(e.code.length > 0, `${e.name}: empty code`);
+    assert.ok(e.solution.length > 0, `${e.name}: solution not found — check the path swap`);
+    assert.notEqual(e.code, e.solution, `${e.name}: code and solution are the same string`);
+  }
+});
+
+test('debug_bin_map is removed before deploy', async () => {
+  const src = await fs.readFile(SRC, 'utf8');
+  assert.ok(!src.includes('debug_bin_map'),
+    'debug_bin_map is a scaffold from Task 2 — remove it before pushing');
+});
+
+// Finding: parseClippyJson tags every entry with its clippy-reported level, and denied1's
+// clippy::eq_op is deny-by-default (level "error") — but denied1 is normally excluded from
+// `selected` on mtime alone (kept old on purpose, see stampFixtureMtimes). Overriding its
+// mtime forward is the only way to observe it flow all the way through the assembly loop
+// into reviewed_exercises, proving `level` is threaded end-to-end and not flattened back to
+// a plain warning anywhere between clippyFor and the payload.
+test('reviewed_exercises carries the clippy level through end-to-end for an error-level finding (denied1)', async () => {
+  const p = await runWorkflow({
+    mtimeOverrides: { 'rustlings/exercises/01_demo/denied1.rs': day('2026-08-12') },
+  });
+  assert.ok(p.selected.includes('denied1'),
+    'fixture setup error: denied1 must be selected for this test to prove anything');
+  const denied = p.reviewed_exercises.find((e) => e.name === 'denied1');
+  assert.ok(denied, 'denied1 missing from reviewed_exercises');
+  const err = denied.clippy.warnings.find((w) => w.level === 'error');
+  assert.ok(err, `expected an error-level warning in reviewed_exercises for denied1, got ${JSON.stringify(denied.clippy.warnings)}`);
+  assert.equal(err.code, 'clippy::eq_op');
+});
+
 test('smoke test against the real tree', async () => {
   const p = await runWorkflow({ base: '/Users/tamnm/code/personal' });
   if (p === null) {
@@ -170,25 +211,6 @@ test('smoke test against the real tree', async () => {
     console.log('Real tree smoke test: Captured payload from agent.');
     assert.ok(p);
   }
-});
-
-test('parseBinMap reads exercise paths and drops _sol targets', async () => {
-  const p = await runWorkflow();
-  const map = p.debug_bin_map;
-  assert.ok(map, 'workflow did not expose debug_bin_map');
-  assert.equal(map.clean1, 'exercises/01_demo/clean1.rs');
-  assert.equal(map.lint1, 'exercises/01_demo/lint1.rs');
-  assert.equal(map.stale1, 'exercises/01_demo/stale1.rs');
-  assert.equal(map.answered_between1, 'exercises/01_demo/answered_between1.rs');
-  assert.equal(map.undone1, 'exercises/01_demo/undone1.rs');
-  assert.equal(map.cap1, 'exercises/01_demo/cap1.rs');
-  assert.equal(map.denied1, 'exercises/01_demo/denied1.rs');
-  assert.equal(map.clean1_sol, undefined, '_sol targets must be excluded');
-  assert.equal(map.lint1_sol, undefined, '_sol targets must be excluded');
-  assert.equal(map.stale1_sol, undefined, '_sol targets must be excluded');
-  assert.equal(map.undone1_sol, undefined, '_sol targets must be excluded');
-  assert.equal(map.denied1_sol, undefined, '_sol targets must be excluded');
-  assert.equal(Object.keys(map).length, 11, 'fixture has exactly 11 exercise targets after _sol exclusion');
 });
 
 test('fixture Cargo.toml is valid and uses production inline-array format', async () => {
@@ -214,7 +236,6 @@ test('selection requires BOTH done and modified-since-last-lesson', async () => 
   const done = new Set(p.rustlings.done);
   for (const n of p.selected) {
     assert.ok(done.has(n), `${n} was selected but is not in rustlings.done`);
-    assert.ok(p.debug_bin_map[n], `${n} was selected but has no bin target`);
   }
   assert.ok(p.selected.length <= 5, 'cap of 5 exceeded');
   assert.equal(new Set(p.selected).size, p.selected.length, 'duplicate entries in selection');

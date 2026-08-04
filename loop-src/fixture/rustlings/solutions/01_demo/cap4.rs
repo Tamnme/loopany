@@ -1,1 +1,4 @@
-fn main() { println!("cap4"); }
+fn main() {
+    // Solved
+    println!("cap4");
+}

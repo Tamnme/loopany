@@ -271,6 +271,24 @@ const failing = [...out.matchAll(/^test (\S+) \.\.\. FAILED$/gm)].map((m) => m[1
 const summary = out.split('\n').filter((l) => l.startsWith('test result:')).join(' | ');
 const compileErrors = out.split('\n').filter((l) => l.startsWith('error')).slice(0, 5);
 
+// The official solution path mirrors the exercise path — rustlings keeps the two trees
+// parallel, so swapping the prefix is exact, not a guess.
+const reviewedExercises = [];
+for (const name of selected) {
+  const rel = binMap[name];
+  const solRel = rel.replace(/^exercises\//, 'solutions/');
+  try {
+    const [code, solution, clippy] = await Promise.all([
+      fs.readFile(base + '/rustlings/' + rel, 'utf8'),
+      fs.readFile(base + '/rustlings/' + solRel, 'utf8').catch(() => ''),
+      clippyFor(name),
+    ]);
+    reviewedExercises.push({ name, path: rel, code, solution, clippy });
+  } catch (e) {
+    continue; // one unreadable exercise must not cost the other four, or the lesson
+  }
+}
+
 await agent(
   "Grading data is pre-fetched below — skip step 1's shell/read commands and go straight to judging yesterday's lesson against it, then write today's to lessons/<today>.md. " +
     'prev_lesson is the file to grade (its full text, plus track_b_answer already extracted — empty means Track B was skipped); ' +
@@ -285,6 +303,7 @@ await agent(
     'due_review is the spaced-repetition ladder already computed — every past lesson now sitting at its ~1w, ~4w or ~12w ' +
     'rung, whether or not it was ever answered wrong. Draw the older questions and the small project from it; the task ' +
     'file\'s Review queue is only the wrong-answer exceptions layered on top, and Retired items are dropped from the draw. ' +
+    'reviewed_exercises is the Rust the owner actually wrote since the last lesson: their code, rustlings\' official solution, and scoped clippy findings with real lint names. Open Track A with the brief\'s "Yesterday\'s code" block built from it — deep-review ONE exercise and give the rest a line each. clippy.ok false means UNKNOWN, never clean. When there is nothing worth saying, omit the block entirely rather than writing praise. ' +
     'Only re-read files or re-run `rustlings check-all` / `cargo test` yourself if this data looks wrong or is null.',
   {
     today,
@@ -296,7 +315,6 @@ await agent(
     history,
     streak_before_prev: streakBeforePrev,
     gap_days: gapDays,
-    debug_bin_map: binMap,
     selected,
     rustlings: {
       current_exercise: currentExercise,
@@ -304,6 +322,7 @@ await agent(
       done_count: doneExercises.length,
       total: 94,
     },
+    reviewed_exercises: reviewedExercises,
     cargo: {
       ok: cargoOk,
       summary,

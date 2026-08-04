@@ -1,1 +1,4 @@
-fn main() { println!("stale"); }
+fn main() {
+    // Solved
+    println!("stale");
+}

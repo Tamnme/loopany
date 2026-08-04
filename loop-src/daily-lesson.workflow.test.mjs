@@ -74,4 +74,12 @@ test('parseBinMap reads exercise paths and drops _sol targets', async () => {
   assert.equal(Object.keys(map).length, 2, 'fixture has exactly 2 exercise targets after _sol exclusion');
 });
 
+test('fixture Cargo.toml uses production inline-array format', async () => {
+  const fixturePath = path.join(here, 'fixture', 'rustlings', 'Cargo.toml');
+  const content = await fs.readFile(fixturePath, 'utf8');
+  assert.ok(content.includes('bin = ['), 'fixture must use inline-array format "bin = ["');
+  assert.ok(content.includes('{ name ='), 'fixture must use inline-table format "{ name ="');
+  assert.ok(!content.includes('[[bin]]'), 'fixture must not use array-of-tables format "[[bin]]"');
+});
+
 export { runWorkflow };

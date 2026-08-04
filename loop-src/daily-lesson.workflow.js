@@ -118,7 +118,7 @@ try {
 // solutions and are excluded here; the solution path is derived from the exercise path.
 const parseBinMap = (toml) => {
   const map = {};
-  for (const m of toml.matchAll(/name\s*=\s*"([^"]+)"\s*path\s*=\s*"([^"]+)"/g)) {
+  for (const m of toml.matchAll(/name\s*=\s*"([^"]+)"\s*,\s*path\s*=\s*"([^"]+)"/g)) {
     if (m[1].endsWith('_sol')) continue;
     map[m[1]] = m[2];
   }

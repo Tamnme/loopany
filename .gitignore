@@ -1,0 +1,9 @@
+# Nested repos with their own history — tracked independently, never as submodules here.
+# rustlings/ also carries a 110M target/ build dir.
+rustlings/
+rust-dsa/
+
+# SDD scratch: ledgers, briefs, review packages. Regenerated per plan run.
+.superpowers/
+
+.DS_Store

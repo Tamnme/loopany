@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-04
 **Loop:** `loop-ms79033a-b8c219c7` — "Rust + DSA — Daily Lesson"
-**Status:** approved, not yet implemented
+**Status:** implemented and deployed 2026-08-04. First live run: 2026-08-05 09:00 Asia/Saigon.
 
 ## Context
 

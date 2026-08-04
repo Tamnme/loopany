@@ -276,6 +276,12 @@ const compileErrors = out.split('\n').filter((l) => l.startsWith('error')).slice
 const reviewedExercises = [];
 for (const name of selected) {
   const rel = binMap[name];
+  // selected is already filtered against this same binMap above, so rel should never be
+  // missing here — but that is an invariant held ACROSS two separate loops with nothing
+  // enforcing it in this file, and a future edit to either loop could silently break it.
+  // Guard explicitly rather than rely on "unreachable by inspection": an uncaught TypeError
+  // here would abort the whole await agent(...) call and cost the owner the day's lesson.
+  if (!rel) continue;
   const solRel = rel.replace(/^exercises\//, 'solutions/');
   try {
     const [code, solution, clippy] = await Promise.all([

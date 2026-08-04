@@ -203,6 +203,37 @@ test('reviewed_exercises carries the clippy level through end-to-end for an erro
   assert.equal(err.code, 'clippy::eq_op');
 });
 
+// Finding: the assembly loop's try/catch ("one unreadable exercise must not cost the other
+// four") had zero coverage — a regression that dropped the catch/continue and let one bad
+// read abort the whole loop (or the whole run) would still pass all other tests. cap4 is made
+// unreadable AT READ TIME via chmod 0o000, not by deleting/renaming it: stat (and therefore
+// selection, and stampFixtureMtimes' own utimes call) still succeeds against a mode-000 file
+// for its owner, so cap4 stays in `selected` exactly as it would in production — only the
+// content read inside the assembly loop's try fails, with EACCES, which is the specific path
+// this test exists to exercise. Mode is restored in `finally` (captured before mutating, not
+// hardcoded) so a failed assertion here can never leave the fixture — or a later test run —
+// looking at a permanently-locked file.
+test('one unreadable exercise does not cost the other four in reviewed_exercises, and the run does not throw', async () => {
+  const targetPath = path.join(FIXTURE, 'rustlings/exercises/01_demo/cap4.rs');
+  const originalMode = (await fs.stat(targetPath)).mode;
+  await fs.chmod(targetPath, 0o000);
+  try {
+    const p = await runWorkflow();
+    assert.ok(p, 'workflow must not throw / must still call agent() when one selected exercise cannot be read');
+    assert.ok(p.selected.includes('cap4'),
+      'fixture setup error: cap4 must still be selected — only its readability, not its mtime, is broken');
+    const names = p.reviewed_exercises.map((e) => e.name);
+    assert.ok(!names.includes('cap4'),
+      'the unreadable exercise must be skipped entirely, never surfaced with broken/partial data');
+    for (const n of ['lint1', 'clean1', 'cap5', 'cap3']) {
+      assert.ok(names.includes(n),
+        `${n} must still populate reviewed_exercises even though cap4's read failed`);
+    }
+  } finally {
+    await fs.chmod(targetPath, originalMode);
+  }
+});
+
 test('smoke test against the real tree', async () => {
   const p = await runWorkflow({ base: '/Users/tamnm/code/personal' });
   if (p === null) {

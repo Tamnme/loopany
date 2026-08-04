@@ -414,10 +414,11 @@ each carrying `{code, message, line, level: 'warning' | 'error'}`. Turn it into 
   completed found **zero default-level findings**, so default alone would have made the
   feature silent for weeks; pedantic surfaces real advice starting at `if1`
   (`clippy::semicolon_if_nothing_returned`, `clippy::uninlined_format_args`) and `quiz1`
-  (`clippy::uninlined_format_args`). Each finding now carries a `level`, and
-  `level: 'error'` (clippy's deny-by-default `correctness` group — a genuine rejection) is
-  surfaced separately from `level: 'warning'` (pedantic idiom advice) because rustlings
-  passing an exercise says nothing about clippy accepting it. Findings arrive pre-capped at
-  10 per exercise, errors before warnings. Workflow source now lives durably at
+  (`clippy::uninlined_format_args`). Each finding now carries a `level`: `error` means a
+  genuine rejection — clippy's own correctness group, a rustlings-forbidden lint, or a bare
+  rustc error code — surfaced separately from `warning` (pedantic idiom advice), since
+  rustlings passing an exercise says nothing about any of those. Findings arrive pre-capped
+  at 10 per exercise — errors survive the cap over warnings, but the array stays in clippy's
+  own emission order, not sorted by level. Workflow source now lives durably at
   `/Users/tamnm/code/personal/loop-src/daily-lesson.workflow.js` with a test harness beside
   it, instead of only on the server.

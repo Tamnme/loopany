@@ -280,7 +280,7 @@ each carrying `{code, message, line, level: 'warning' | 'error'}`. Turn it into 
   of warnings, but the array is otherwise in clippy's own emission order, not re-sorted), for
   up to 5 exercises that are both in `rustlings.done` **and** modified since the previous
   lesson file's **birthtime** (not its mtime — the lesson file gets rewritten after issue, so
-  mtime means "last touched", not "when issued"; see the gotcha below). Never re-read those
+  mtime means "last touched", not "when issued"). Never re-read those
   files or re-run clippy by hand. **Pedantic is on because default clippy produced zero
   findings across all 17 exercises the owner had completed as of 2026-08-04**
   (`intro1..2`, `variables1..6`, `functions1..5`, `if1..3`, `quiz1`) — default alone would have
@@ -338,9 +338,10 @@ each carrying `{code, message, line, level: 'warning' | 'error'}`. Turn it into 
   - **Duplicate wakes happen** (07-31 fired twice, 23 min apart). The workflow now gates
     them; if it ever falls back and you see `lessons/<today>.md` already `assigned`, don't
     grade it and don't issue a second one — report `nothing-new` and stop.
-  - **Never edit a file under `rustlings/exercises/` yourself.** Its mtime is the cutoff that
-    decides what gets reviewed; touching one makes stale work look new. Feedback is prose in
-    the lesson, never an edit to the owner's code.
+  - **Never edit a file under `rustlings/exercises/` yourself.** Its mtime is what the cutoff
+    (the previous lesson file's birthtime) is compared against to decide what gets reviewed;
+    touching one makes stale work look new. Feedback is prose in the lesson, never an edit to
+    the owner's code.
   - **Clippy runs at pedantic, not default — default was silent.** A sweep across all 17
     exercises the owner had completed as of 2026-08-04 (`intro1..2`, `variables1..6`,
     `functions1..5`, `if1..3`, `quiz1`) found zero default-level findings, so pedantic

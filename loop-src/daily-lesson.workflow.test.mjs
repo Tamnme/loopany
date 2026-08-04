@@ -297,9 +297,43 @@ test('clippy per-command timeout fits inside the loopany host\'s 30s workflow ca
     `clippy per-command timeout (${clippyTimeoutMs}ms) must fit well inside the loopany host's 30s workflow cap`);
   assert.ok(clippyTimeoutMs >= 1000,
     `clippy per-command timeout (${clippyTimeoutMs}ms) must stay well above real clippy's observed ~0.35s runtime`);
-  // The cargo clippy invocation itself must actually use the named constant, not a stray literal.
-  assert.match(src, /run\(\s*\n?\s*'cargo',\s*\n?\s*\[[^\]]*'clippy'[\s\S]{0,300}?timeout:\s*CLIPPY_TIMEOUT_MS/,
-    'the cargo clippy run() call must use CLIPPY_TIMEOUT_MS, not a hardcoded literal');
+});
+
+// Finding (Important, coordinator review): the assembly loop's admission guard uses the FULL
+// remainingMs() budget, but a flat CLIPPY_TIMEOUT_MS granted to the LAST admitted exercise could
+// still push the whole run past the host's 30s cap (worst case ~24999ms admission + 8000ms flat
+// grant = ~32999ms). clippy's per-call timeout must therefore be Math.min(CLIPPY_TIMEOUT_MS,
+// remainingMs()) computed FRESH at call time — not CLIPPY_TIMEOUT_MS alone — so the grant itself
+// shrinks as the shared budget shrinks.
+test("clippy's per-call timeout is Math.min(CLIPPY_TIMEOUT_MS, remainingMs()) computed at call time, not a stray literal (coordinator finding)", async () => {
+  const src = await fs.readFile(SRC, 'utf8');
+  assert.match(src, /run\(\s*\n?\s*'cargo',\s*\n?\s*\[[^\]]*'clippy'[\s\S]{0,300}?timeout:\s*clippyBudgetMs/,
+    'the cargo clippy run() call must use a computed clippyBudgetMs, never CLIPPY_TIMEOUT_MS directly or a stray literal');
+  assert.match(src, /clippyBudgetMs\s*=\s*Math\.min\(\s*CLIPPY_TIMEOUT_MS\s*,\s*remainingMs\(\s*\)\s*\)/,
+    "clippy's budget must be Math.min(CLIPPY_TIMEOUT_MS, remainingMs()), recomputed for every call, not a flat cap");
+});
+
+// Proves the zero/negative-budget path SKIPS the clippy call rather than granting it a flat
+// CLIPPY_TIMEOUT_MS — by driving the shared budget to 0 and calling the REAL clippyFor directly,
+// not by inspecting source. A skipped call must read as ok:false (UNKNOWN), never ok:true — a
+// skipped-but-reported-clean call would tell the owner their code is clean when it was never
+// actually checked, which an earlier round of fixes exists to prevent.
+test('clippy is SKIPPED (ok:false) rather than granted a flat CLIPPY_TIMEOUT_MS once the shared host-timeout budget is spent (coordinator finding)', async () => {
+  const result = await callClippyFor('lint1', FIXTURE, { hostTimeoutOverrideMs: 0 });
+  assert.deepEqual(result, { ok: false, warnings: [] },
+    'a spent host-timeout budget must skip the clippy call entirely and report UNKNOWN (ok:false), ' +
+      'never run it with an unbounded/flat timeout and never report ok:true');
+});
+
+// Regression guard: with a generous (production-sized) budget, clippy must still behave exactly
+// as before — Math.min(CLIPPY_TIMEOUT_MS, remainingMs()) must resolve to the full 8000ms hard cap
+// when there is no real time pressure, not an accidentally-shrunk value.
+test('a generous host-timeout budget still grants clippy its full CLIPPY_TIMEOUT_MS hard cap (coordinator finding regression guard)', async () => {
+  const result = await callClippyFor('lint1', FIXTURE, { hostTimeoutOverrideMs: 60000 });
+  assert.equal(result.ok, true, 'with a generous budget, clippy should actually run and succeed as before');
+  const codes = result.warnings.map((w) => w.code);
+  assert.ok(codes.includes('clippy::needless_return'),
+    'a generous budget must still surface lint1\'s real findings, not a degraded/skipped result');
 });
 
 // Finding 4 follow-up: the old fixed 240000ms cargo-test timeout could never fire inside the
@@ -497,24 +531,49 @@ test('selection caps at 5 and is newest-mtime first across more than 5 candidate
 // wire into reviewed_exercises — and runs it directly against the fixture's own real cargo
 // project. No mocking of cargo/clippy: this is a real ~0.35s-per-bin clippy invocation,
 // same as production.
-async function loadClippyModule(baseVal = FIXTURE) {
+// clippyFor now calls the shared remainingMs() budget helper (see WORKFLOW_START/HOST_TIMEOUT_MS
+// at the top of the source), so that block is pulled into the wrapped module too — not just the
+// clippy-specific slice — otherwise `remainingMs` would be an undefined reference here. An
+// optional hostTimeoutOverrideMs lets a test force the shared budget to an exact value (e.g. 0),
+// the same source-text-surgery technique runWorkflow uses, so the zero-budget skip guard can be
+// proven directly against the real clippyFor function without waiting on a real slow process.
+async function loadClippyModule(baseVal = FIXTURE, opts = {}) {
   if (baseVal === FIXTURE) await stampFixtureMtimes();
   const body = await fs.readFile(SRC, 'utf8');
-  const startMarker = '// Scoped clippy:';
-  const endMarker = "let out = '';";
-  const start = body.indexOf(startMarker);
-  const end = body.indexOf(endMarker);
-  if (start === -1 || end === -1) {
+
+  const timingStartMarker = 'const WORKFLOW_START = Date.now();';
+  const timingEndMarker = "const base = '/Users/tamnm/code/personal';";
+  const timingStart = body.indexOf(timingStartMarker);
+  const timingEnd = body.indexOf(timingEndMarker);
+  if (timingStart === -1 || timingEnd === -1) {
+    throw new Error('Could not locate the WORKFLOW_START/HOST_TIMEOUT_MS/remainingMs block in the workflow source');
+  }
+  let timingSlice = body.slice(timingStart, timingEnd);
+  if (opts.hostTimeoutOverrideMs !== undefined) {
+    const hostTimeoutStr = /const HOST_TIMEOUT_MS = \d+;/;
+    if (!hostTimeoutStr.test(timingSlice)) {
+      throw new Error('Could not find the exact HOST_TIMEOUT_MS constant declaration in the timing slice');
+    }
+    timingSlice = timingSlice.replace(hostTimeoutStr, `const HOST_TIMEOUT_MS = ${opts.hostTimeoutOverrideMs};`);
+  }
+
+  const clippyStartMarker = '// Scoped clippy:';
+  const clippyEndMarker = "let out = '';";
+  const clippyStart = body.indexOf(clippyStartMarker);
+  const clippyEnd = body.indexOf(clippyEndMarker);
+  if (clippyStart === -1 || clippyEnd === -1) {
     throw new Error('Could not locate the clippy block (parseClippyJson/clippyFor/capWarnings) in the workflow source');
   }
-  const slice = body.slice(start, end);
+  const clippySlice = body.slice(clippyStart, clippyEnd);
+
   const wrapped =
     "const fs = await import('node:fs/promises');\n" +
     "const { execFile } = await import('node:child_process');\n" +
     "const { promisify } = await import('node:util');\n" +
     'const run = promisify(execFile);\n' +
+    `${timingSlice}\n` +
     `const base = ${JSON.stringify(baseVal)};\n` +
-    `${slice}\n` +
+    `${clippySlice}\n` +
     'export { clippyFor, capWarnings };\n';
   const tmp = path.join(here, `.wf.clippy.harness.${Date.now()}.${Math.random().toString(36).slice(2)}.mjs`);
   await fs.writeFile(tmp, wrapped);
@@ -525,8 +584,8 @@ async function loadClippyModule(baseVal = FIXTURE) {
   }
 }
 
-async function callClippyFor(name, baseVal = FIXTURE) {
-  const mod = await loadClippyModule(baseVal);
+async function callClippyFor(name, baseVal = FIXTURE, opts = {}) {
+  const mod = await loadClippyModule(baseVal, opts);
   return mod.clippyFor(name);
 }
 

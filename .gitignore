@@ -11,3 +11,4 @@
 # task 1
 /loop-src/fixture/rustlings/target/
 /loop-src/fixture/rust-dsa/target/
+/loop-src/fixture/slow-cargo-scenario/rust-dsa/target/

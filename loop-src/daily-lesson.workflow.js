@@ -262,20 +262,29 @@ const parseClippyJson = (text) => {
 
 // The loopany host kills the WHOLE workflow — not just this block — after
 // LOOPANY_WORKFLOW_TIMEOUT_SECONDS, which defaults to 30s (@crewlet/loopany/dist/workflow.js;
-// the LaunchAgent plist sets only PATH, so the default stands). 120000ms could never actually
-// fire before that host cap does, so a single `cargo clippy` stuck on e.g. rustlings' own
-// build-directory lock used to cost the entire prefetch — prev_lesson, history, due_review,
-// streak, cargo, all of it — not just this feedback block. 8s keeps one stuck call from doing
-// that while staying >20x the ~0.35s a real scoped clippy run takes. Do NOT raise this back
-// toward "generous" — that silently reopens the same failure.
+// the LaunchAgent plist sets only PATH, so the default stands). 8000ms is the hard cap for the
+// healthy case — >20x the ~0.35s a real scoped clippy run takes. But a flat cap alone is NOT
+// enough: the assembly loop above admits an exercise whenever remainingMs() > 0, which can be as
+// late as just before the shared host-timeout budget is gone, and granting a flat 8000ms at that
+// point could still push the whole run past the host's 30s cap. Each call's ACTUAL timeout is
+// therefore Math.min(CLIPPY_TIMEOUT_MS, remainingMs()) computed FRESH at call time, not once for
+// the whole loop — remaining time shrinks with every exercise already processed. Do NOT raise
+// CLIPPY_TIMEOUT_MS back toward "generous" — that silently reopens the original failure.
 const CLIPPY_TIMEOUT_MS = 8000;
 
 const clippyFor = async (name) => {
+  const clippyBudgetMs = Math.min(CLIPPY_TIMEOUT_MS, remainingMs());
+  // Same rule as cargo test's skip guard above: child_process's `timeout: 0` means NO TIMEOUT,
+  // so a spent budget must SKIP the call rather than pass 0/negative through — that would
+  // silently reopen the exact bug being fixed. ok:false means UNKNOWN, never clean — a skipped
+  // clippy call must NEVER report {ok: true, warnings: []}; that would tell the owner their code
+  // is clean when it was never actually checked, which an earlier round of fixes exists to prevent.
+  if (clippyBudgetMs <= 0) return { ok: false, warnings: [] };
   try {
     const res = await run(
       'cargo',
       ['clippy', '--quiet', '--message-format=json', '--bin', name, ...PEDANTIC_ARGS],
-      { cwd: base + '/rustlings', timeout: CLIPPY_TIMEOUT_MS, maxBuffer: 8e6 },
+      { cwd: base + '/rustlings', timeout: clippyBudgetMs, maxBuffer: 8e6 },
     );
     return { ok: true, warnings: capWarnings(parseClippyJson(res.stdout + res.stderr)) };
   } catch (e) {

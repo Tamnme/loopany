@@ -188,8 +188,15 @@ const parseClippyJson = (text) => {
     try { j = JSON.parse(line); } catch (e) { continue; }
     if (j.reason !== 'compiler-message') continue;
     const m = j.message;
-    if (!m || m.level !== 'warning' || !m.code) continue;
-    out.push({ code: m.code.code, message: m.message, line: m.spans?.[0]?.line_start ?? null });
+    // Do NOT narrow this to 'warning' only. Clippy's `correctness` group is deny-by-default,
+    // so a real correctness violation (e.g. clippy::eq_op) arrives at level "error", not
+    // "warning" — and rustlings' own pass bar is rustc/test success, which says nothing
+    // about clippy, so a `done` exercise can absolutely trip one. Dropping error-level
+    // entries here would make that case indistinguishable from a genuinely clean exercise:
+    // both would surface as {ok:true, warnings:[]}. Keep both levels and let `level` on each
+    // entry carry the distinction downstream.
+    if (!m || (m.level !== 'warning' && m.level !== 'error') || !m.code) continue;
+    out.push({ code: m.code.code, message: m.message, line: m.spans?.[0]?.line_start ?? null, level: m.level });
   }
   return out;
 };

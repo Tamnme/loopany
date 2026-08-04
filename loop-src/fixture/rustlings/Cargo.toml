@@ -19,6 +19,8 @@ bin = [
   { name = "cap4_sol", path = "solutions/01_demo/cap4.rs" },
   { name = "cap5", path = "exercises/01_demo/cap5.rs" },
   { name = "cap5_sol", path = "solutions/01_demo/cap5.rs" },
+  { name = "denied1", path = "exercises/01_demo/denied1.rs" },
+  { name = "denied1_sol", path = "solutions/01_demo/denied1.rs" },
 ]
 
 [package]

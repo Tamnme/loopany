@@ -47,6 +47,15 @@ async function stampFixtureMtimes(overrides = {}) {
   await stamp('rustlings/exercises/01_demo/stale1.rs', day('2026-07-01'));
   await stamp('rustlings/solutions/01_demo/stale1.rs', day('2026-07-01'));
 
+  // denied1: done, and — like a real owner's exercise — old, deliberately kept OUT of the
+  // newest-5 selection window on mtime alone (same shape as stale1) so this Finding-4 fixture
+  // addition cannot perturb any Task 3 selection assertion. It exists to prove clippy's
+  // correctness group (deny-by-default, reported at level "error") is captured rather than
+  // dropped, which selection timing has no bearing on: it is only ever probed directly via
+  // clippyFor('denied1'), never through `selected`.
+  await stamp('rustlings/exercises/01_demo/denied1.rs', day('2026-07-02'));
+  await stamp('rustlings/solutions/01_demo/denied1.rs', day('2026-07-02'));
+
   // Finding 1 probe: modified strictly between the lesson's birthtime and its (later,
   // simulated write-back) mtime. A correct birthtime cutoff selects it; a regression back to
   // a plain-mtime cutoff excludes it. This is the only fixture evidence for that behavior.
@@ -173,11 +182,13 @@ test('parseBinMap reads exercise paths and drops _sol targets', async () => {
   assert.equal(map.answered_between1, 'exercises/01_demo/answered_between1.rs');
   assert.equal(map.undone1, 'exercises/01_demo/undone1.rs');
   assert.equal(map.cap1, 'exercises/01_demo/cap1.rs');
+  assert.equal(map.denied1, 'exercises/01_demo/denied1.rs');
   assert.equal(map.clean1_sol, undefined, '_sol targets must be excluded');
   assert.equal(map.lint1_sol, undefined, '_sol targets must be excluded');
   assert.equal(map.stale1_sol, undefined, '_sol targets must be excluded');
   assert.equal(map.undone1_sol, undefined, '_sol targets must be excluded');
-  assert.equal(Object.keys(map).length, 10, 'fixture has exactly 10 exercise targets after _sol exclusion');
+  assert.equal(map.denied1_sol, undefined, '_sol targets must be excluded');
+  assert.equal(Object.keys(map).length, 11, 'fixture has exactly 11 exercise targets after _sol exclusion');
 });
 
 test('fixture Cargo.toml is valid and uses production inline-array format', async () => {
@@ -295,6 +306,9 @@ test('clippy finds real lint names on a dirty exercise (lint1)', async () => {
     assert.match(w.code, /^clippy::/, 'expected a clippy lint name, not a scraped human-readable string');
     assert.equal(typeof w.message, 'string');
     assert.ok(w.message.length > 0);
+    // lint1's two lints (needless_return, ptr_arg) are both warn-level, not deny-by-default —
+    // locks in that the ordinary warning path still reports level correctly.
+    assert.equal(w.level, 'warning', `expected lint1's lints to be warn-level, got ${w.level}`);
   }
 });
 
@@ -308,6 +322,28 @@ test('clippy on a bin that does not exist in the manifest is ok:false, not a fal
   const result = await callClippyFor('does_not_exist_in_manifest_xyz');
   assert.deepEqual(result, { ok: false, warnings: [] },
     'a clippy invocation that cannot run at all must read as unknown (ok:false), never as clean');
+});
+
+// Finding: clippy's `correctness` lint group is deny-by-default, so a real correctness
+// violation is reported at level "error", not "warning" — and rustlings' own pass bar
+// (rustc/test success) says nothing about clippy, so a `done` exercise can absolutely trip
+// one. A filter that only kept warning-level entries would silently collapse this into
+// {ok:true, warnings:[]} — byte-identical to clean1's genuinely-clean result. denied1
+// (clippy::eq_op, a self-comparison) locks in that this is caught and tagged distinctly.
+test('an error-level correctness lint (denied1) is captured, not dropped, and is not read as clean', async () => {
+  const denied = await callClippyFor('denied1');
+  assert.equal(denied.ok, true, 'denied1 compiles fine — clippy must be able to run');
+  const eqOp = denied.warnings.find((w) => w.code === 'clippy::eq_op');
+  assert.ok(eqOp, `expected clippy::eq_op among ${JSON.stringify(denied.warnings)}`);
+  assert.equal(eqOp.level, 'error', 'clippy::eq_op is deny-by-default and must report level "error"');
+  assert.equal(typeof eqOp.message, 'string');
+  assert.ok(eqOp.message.length > 0);
+  assert.notDeepEqual(denied, { ok: true, warnings: [] },
+    'a denied correctness violation must never be indistinguishable from a genuinely clean exercise');
+
+  const clean = await callClippyFor('clean1');
+  assert.notDeepEqual(denied, clean,
+    'denied1 (a real correctness violation) must not read the same as clean1 (genuinely clean)');
 });
 
 export { runWorkflow };

@@ -119,13 +119,25 @@ async function runWorkflow(opts = {}) {
     await stampFixtureMtimes(opts.mtimeOverrides || {});
   }
   let body = await fs.readFile(SRC, 'utf8');
-  
+
   const searchStr = "const base = '/Users/tamnm/code/personal';";
   if (!body.includes(searchStr)) {
     throw new Error("Could not find the exact 'const base = ...' string in the workflow file");
   }
   body = body.replace(searchStr, `const base = '${baseVal}';`);
-  
+
+  // Finding 4: lets a test force the reviewed_exercises assembly loop's wall-clock budget to
+  // an exact value (e.g. 0, to prove the loop degrades to nothing rather than throwing once
+  // its budget is already spent) without needing a real slow clippy invocation, which would be
+  // both slow and flaky. Source-text surgery, same technique as the `base` override above.
+  if (opts.assemblyDeadlineOverrideMs !== undefined) {
+    const deadlineStr = /const ASSEMBLY_DEADLINE_MS = \d+;/;
+    if (!deadlineStr.test(body)) {
+      throw new Error('Could not find the exact ASSEMBLY_DEADLINE_MS constant declaration in the workflow file');
+    }
+    body = body.replace(deadlineStr, `const ASSEMBLY_DEADLINE_MS = ${opts.assemblyDeadlineOverrideMs};`);
+  }
+
   const wrapped = `export default async function(){\n${body}\n}`;
   const tmp = path.join(here, `.wf.harness.${Date.now()}.${Math.random().toString(36).slice(2)}.mjs`);
   await fs.writeFile(tmp, wrapped);
@@ -232,6 +244,59 @@ test('one unreadable exercise does not cost the other four in reviewed_exercises
   } finally {
     await fs.chmod(targetPath, originalMode);
   }
+});
+
+// Finding 4: the loopany host kills the WHOLE workflow (not just this block) at a 30s
+// default (LOOPANY_WORKFLOW_TIMEOUT_SECONDS, see @crewlet/loopany/dist/workflow.js) and the
+// LaunchAgent plist sets only PATH, so the default stands. The old per-command timeouts
+// (clippy 120000ms x up to 5 sequential calls, cargo test 240000ms) could never fire before
+// the host's own cap does — so a single stuck `cargo clippy` (e.g. blocked on rustlings'
+// build-directory lock) used to cost the ENTIRE prefetch (prev_lesson, history, due_review,
+// streak, cargo — all of it), not just the feedback block. This proves the assembly loop
+// itself degrades gracefully: forcing its budget to 0 must yield an empty
+// reviewed_exercises without throwing, while every other prefetched field survives untouched.
+test('reviewed_exercises assembly loop degrades to empty, never throws, once its wall-clock budget is already spent (finding 4)', async () => {
+  const p = await runWorkflow({ assemblyDeadlineOverrideMs: 0 });
+  assert.ok(p, 'workflow must still call agent() when the assembly budget is already spent');
+  assert.ok(p.selected.length > 0, 'fixture setup: selection itself must be unaffected by the assembly deadline');
+  assert.deepEqual(p.reviewed_exercises, [],
+    'with zero assembly budget, no exercise should be attempted, and the loop must not throw');
+  // The rest of the prefetch must survive completely — losing it all over a stuck clippy call
+  // is exactly the failure this fix closes.
+  assert.ok(p.prev_lesson, 'prev_lesson must still be present even when the feedback block is skipped entirely');
+  assert.ok(Array.isArray(p.history) && p.history.length > 0, 'history must still be present');
+  assert.ok(Array.isArray(p.due_review), 'due_review must still be present');
+  assert.equal(typeof p.streak_before_prev, 'number', 'streak_before_prev must still be present');
+  assert.ok(p.cargo, 'cargo must still be present');
+});
+
+// With a generous (production-sized) budget, the loop must behave exactly as before — this
+// guards against an off-by-one or inverted comparison in the deadline check silently capping
+// the fixture's 2+ qualifying candidates down to fewer than they should be.
+test('a generous assembly budget still gathers every qualifying exercise (finding 4 regression guard)', async () => {
+  const p = await runWorkflow({ assemblyDeadlineOverrideMs: 60000 });
+  assert.equal(p.reviewed_exercises.length, p.selected.length,
+    'a 60s budget must be more than enough for the fixture — every selected exercise should be gathered');
+});
+
+test('clippy per-command timeout fits inside the loopany host\'s 30s workflow cap (finding 4)', async () => {
+  const src = await fs.readFile(SRC, 'utf8');
+  const m = /CLIPPY_TIMEOUT_MS\s*=\s*(\d+)/.exec(src);
+  assert.ok(m, 'expected a named CLIPPY_TIMEOUT_MS constant so the value cannot silently drift back up');
+  const clippyTimeoutMs = Number(m[1]);
+  assert.ok(clippyTimeoutMs <= 10000,
+    `clippy per-command timeout (${clippyTimeoutMs}ms) must fit well inside the loopany host's 30s workflow cap`);
+  assert.ok(clippyTimeoutMs >= 1000,
+    `clippy per-command timeout (${clippyTimeoutMs}ms) must stay well above real clippy's observed ~0.35s runtime`);
+  // The cargo clippy invocation itself must actually use the named constant, not a stray literal.
+  assert.match(src, /run\(\s*\n?\s*'cargo',\s*\n?\s*\[[^\]]*'clippy'[\s\S]{0,300}?timeout:\s*CLIPPY_TIMEOUT_MS/,
+    'the cargo clippy run() call must use CLIPPY_TIMEOUT_MS, not a hardcoded literal');
+});
+
+test('the pre-existing cargo test timeout is untouched — out of scope for finding 4', async () => {
+  const src = await fs.readFile(SRC, 'utf8');
+  assert.match(src, /run\('cargo',\s*\['test'\][\s\S]{0,80}timeout:\s*240000/,
+    'cargo test\'s timeout must remain 240000ms — changing it is out of scope for this fix and risks the grading data the lesson depends on');
 });
 
 test('smoke test against the real tree', async () => {
@@ -364,13 +429,44 @@ test('clippy finds real lint names on a dirty exercise (lint1), pedantic on', as
   assert.ok(codes.includes('clippy::ptr_arg'),
     `expected clippy::ptr_arg among ${JSON.stringify(codes)}`);
   for (const w of result.warnings) {
-    assert.match(w.code, /^clippy::/, 'expected a clippy lint name, not a scraped human-readable string');
+    // Finding 5: shape only, not a `clippy::` prefix — parseClippyJson deliberately keeps ANY
+    // compiler-message with a `code`, so a level:'error' entry elsewhere can legitimately be a
+    // rustlings-forbidden lint or a bare rustc code (e.g. `E0061`) with no `clippy::` prefix at
+    // all (see the 'nonclippy1' test below). Asserting the prefix here would only be true
+    // because lint1 happens to carry two genuine clippy lints — it must not be generalised
+    // into a shape contract the fixture alone can satisfy.
+    assert.equal(typeof w.code, 'string');
+    assert.ok(w.code.length > 0, 'expected a non-empty lint/error code, not a scraped human-readable string');
     assert.equal(typeof w.message, 'string');
     assert.ok(w.message.length > 0);
     // lint1's two lints (needless_return, ptr_arg) are both warn-level, not deny-by-default —
     // locks in that the ordinary warning path still reports level correctly.
     assert.equal(w.level, 'warning', `expected lint1's lints to be warn-level, got ${w.level}`);
   }
+});
+
+// Finding 5: parseClippyJson keeps ANY compiler-message carrying a `code`, not only clippy's
+// own lints — production rustlings' Cargo.toml has a [lints] section (unsafe_code = "forbid",
+// clippy::todo = "forbid", empty_loop = "forbid", infinite_loop = "deny", mem_forget = "deny")
+// that this fixture manifest otherwise lacks entirely, and a plain rustc diagnostic (a bare
+// error code like E0061) is admitted the same way. `nonclippy1` (an unused variable) is
+// deliberately NOT a clippy lint — it is rustc's own built-in `unused_variables` lint, chosen
+// specifically because it is a stable, decades-old compiler diagnostic (not a clippy lint
+// name, which do get renamed/moved across clippy versions), so this case is not
+// clippy-version-fragile the way pinning a specific clippy lint name would be. It is also
+// deliberately absent from `.rustlings-state.txt` / the done-list, so it can never enter
+// `selected` and cannot perturb any selection-timing test — it is only ever probed directly
+// via clippyFor('nonclippy1'), exactly like denied1's direct-probe tests above.
+test('clippy captures a non-clippy diagnostic code (nonclippy1) without mislabeling it as a clippy:: lint (finding 5)', async () => {
+  const result = await callClippyFor('nonclippy1');
+  assert.equal(result.ok, true, 'nonclippy1 compiles fine — clippy must be able to run');
+  const found = result.warnings.find((w) => w.code === 'unused_variables');
+  assert.ok(found, `expected a rustc 'unused_variables' diagnostic among ${JSON.stringify(result.warnings)}`);
+  assert.equal(found.level, 'warning', "rustc's unused_variables lint is warn-level by default");
+  assert.equal(typeof found.message, 'string');
+  assert.ok(found.message.length > 0);
+  assert.ok(!/^clippy::/.test(found.code),
+    'this is the whole point of the fixture case: a real, non-fixture-specific finding whose code has no clippy:: prefix at all');
 });
 
 // Re-verified genuinely clean under `-W clippy::pedantic` (not just default clippy):

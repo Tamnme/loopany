@@ -21,6 +21,8 @@ bin = [
   { name = "cap5_sol", path = "solutions/01_demo/cap5.rs" },
   { name = "denied1", path = "exercises/01_demo/denied1.rs" },
   { name = "denied1_sol", path = "solutions/01_demo/denied1.rs" },
+  { name = "nonclippy1", path = "exercises/01_demo/nonclippy1.rs" },
+  { name = "nonclippy1_sol", path = "solutions/01_demo/nonclippy1.rs" },
 ]
 
 [package]

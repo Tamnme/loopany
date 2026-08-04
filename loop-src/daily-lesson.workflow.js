@@ -180,6 +180,40 @@ if (since > 0) {
 // 94 crates — measured at 0.35s. JSON format carries the lint NAME, which the prose quotes.
 // Cargo replays cached clippy diagnostics on repeat runs, so no cache-busting flag is used —
 // and source files are never touched here, because that would corrupt the mtime cutoff above.
+//
+// Pedantic is intentionally ON. A sweep of every exercise the owner has actually completed
+// (intro1, intro2, variables1-6, functions1-5, if1-3, quiz1 — 17 in all) found ZERO default-
+// level clippy findings across the whole set: default clippy is tuned for production code
+// and has nothing to say about five-line teaching exercises. `-W clippy::pedantic` surfaces
+// the idiom advice a learner actually wants — if1 alone has 2 pedantic findings. Do NOT
+// "clean this up" back to default clippy: that silently kills the feature again.
+const PEDANTIC_ARGS = ['--', '-W', 'clippy::pedantic'];
+
+// Pedantic is chattier than default clippy, so cap what reaches the payload. The cap is
+// error-aware: warning-level entries must never crowd out error-level ones. An error means
+// clippy's deny-by-default `correctness` group fired (see the note in parseClippyJson below)
+// — the single most important thing we can tell the owner — so every error-level entry
+// survives the cap first, and only then do warnings fill whatever slots remain. The final
+// list stays in clippy's own emission order (we filter the original array by kept index,
+// never re-sort by level), so "the first N in emit order" still holds whenever nothing had
+// to be dropped to make room for an error.
+const WARNING_CAP = 10;
+const capWarnings = (warnings, capSize = WARNING_CAP) => {
+  const keepIdx = new Set();
+  const errorIdx = [];
+  const otherIdx = [];
+  warnings.forEach((w, i) => (w.level === 'error' ? errorIdx : otherIdx).push(i));
+  for (const i of errorIdx) {
+    if (keepIdx.size >= capSize) break;
+    keepIdx.add(i);
+  }
+  for (const i of otherIdx) {
+    if (keepIdx.size >= capSize) break;
+    keepIdx.add(i);
+  }
+  return warnings.filter((_, i) => keepIdx.has(i));
+};
+
 const parseClippyJson = (text) => {
   const out = [];
   for (const line of text.split('\n')) {
@@ -205,10 +239,10 @@ const clippyFor = async (name) => {
   try {
     const res = await run(
       'cargo',
-      ['clippy', '--quiet', '--message-format=json', '--bin', name],
+      ['clippy', '--quiet', '--message-format=json', '--bin', name, ...PEDANTIC_ARGS],
       { cwd: base + '/rustlings', timeout: 120000, maxBuffer: 8e6 },
     );
-    return { ok: true, warnings: parseClippyJson(res.stdout + res.stderr) };
+    return { ok: true, warnings: capWarnings(parseClippyJson(res.stdout + res.stderr)) };
   } catch (e) {
     const text = (e.stdout || '') + (e.stderr || '');
     // ok is UNKNOWN unless the output actually contains parseable compiler-message JSON.
@@ -218,7 +252,7 @@ const clippyFor = async (name) => {
     // must never be read as "clean".
     const hasJson = text.split('\n').some((l) => l.startsWith('{'));
     if (!hasJson) return { ok: false, warnings: [] };
-    return { ok: true, warnings: parseClippyJson(text) };
+    return { ok: true, warnings: capWarnings(parseClippyJson(text)) };
   }
 };
 

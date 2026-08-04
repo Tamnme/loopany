@@ -266,7 +266,7 @@ test('selection caps at 5 and is newest-mtime first across more than 5 candidate
 // wire into reviewed_exercises — and runs it directly against the fixture's own real cargo
 // project. No mocking of cargo/clippy: this is a real ~0.35s-per-bin clippy invocation,
 // same as production.
-async function callClippyFor(name, baseVal = FIXTURE) {
+async function loadClippyModule(baseVal = FIXTURE) {
   if (baseVal === FIXTURE) await stampFixtureMtimes();
   const body = await fs.readFile(SRC, 'utf8');
   const startMarker = '// Scoped clippy:';
@@ -274,7 +274,7 @@ async function callClippyFor(name, baseVal = FIXTURE) {
   const start = body.indexOf(startMarker);
   const end = body.indexOf(endMarker);
   if (start === -1 || end === -1) {
-    throw new Error('Could not locate the clippy block (parseClippyJson/clippyFor) in the workflow source');
+    throw new Error('Could not locate the clippy block (parseClippyJson/clippyFor/capWarnings) in the workflow source');
   }
   const slice = body.slice(start, end);
   const wrapped =
@@ -284,24 +284,33 @@ async function callClippyFor(name, baseVal = FIXTURE) {
     'const run = promisify(execFile);\n' +
     `const base = ${JSON.stringify(baseVal)};\n` +
     `${slice}\n` +
-    'export { clippyFor };\n';
+    'export { clippyFor, capWarnings };\n';
   const tmp = path.join(here, `.wf.clippy.harness.${Date.now()}.${Math.random().toString(36).slice(2)}.mjs`);
   await fs.writeFile(tmp, wrapped);
   try {
-    const mod = await import(tmp + '?t=' + process.hrtime.bigint());
-    return await mod.clippyFor(name);
+    return await import(tmp + '?t=' + process.hrtime.bigint());
   } finally {
     await fs.rm(tmp, { force: true });
   }
 }
 
-test('clippy finds real lint names on a dirty exercise (lint1)', async () => {
+async function callClippyFor(name, baseVal = FIXTURE) {
+  const mod = await loadClippyModule(baseVal);
+  return mod.clippyFor(name);
+}
+
+test('clippy finds real lint names on a dirty exercise (lint1), pedantic on', async () => {
   const result = await callClippyFor('lint1');
   assert.equal(result.ok, true, 'lint1 compiles fine — clippy must be able to run');
   assert.ok(Array.isArray(result.warnings));
   const codes = result.warnings.map((w) => w.code);
+  // Membership, not exact-equality: pedantic can surface more than these two over time
+  // (clippy versions change), and the test must keep proving these specific codes are
+  // captured rather than pinning the whole set and breaking on every clippy upgrade.
   assert.ok(codes.includes('clippy::needless_return'),
     `expected clippy::needless_return among ${JSON.stringify(codes)}`);
+  assert.ok(codes.includes('clippy::ptr_arg'),
+    `expected clippy::ptr_arg among ${JSON.stringify(codes)}`);
   for (const w of result.warnings) {
     assert.match(w.code, /^clippy::/, 'expected a clippy lint name, not a scraped human-readable string');
     assert.equal(typeof w.message, 'string');
@@ -312,6 +321,10 @@ test('clippy finds real lint names on a dirty exercise (lint1)', async () => {
   }
 });
 
+// Re-verified genuinely clean under `-W clippy::pedantic` (not just default clippy):
+// `clean1` is `fn main() { println!("ok"); }`, which pedantic still has nothing to say
+// about. The {ok:true, warnings:[]} semantic depends on a real clean case existing —
+// this is it.
 test('clippy reports zero warnings on a clean exercise (clean1), distinguishable from unknown', async () => {
   const result = await callClippyFor('clean1');
   assert.deepEqual(result, { ok: true, warnings: [] },
@@ -344,6 +357,52 @@ test('an error-level correctness lint (denied1) is captured, not dropped, and is
   const clean = await callClippyFor('clean1');
   assert.notDeepEqual(denied, clean,
     'denied1 (a real correctness violation) must not read the same as clean1 (genuinely clean)');
+});
+
+// Pedantic is chattier than default clippy, so the payload is capped at WARNING_CAP (10).
+// The cap must be error-aware: an error is the single most important thing we can tell the
+// owner, so no warning-level entry may crowd one out. This is SIMULATED directly against
+// the pure capWarnings function (not run through a real clippy invocation): the real
+// fixture bins only ever produce 0-2 findings each, and constructing a genuine 10+-finding
+// exercise would mean a fragile, clippy-version-dependent source file. Simulating the exact
+// {code, message, line, level} shape parseClippyJson produces tests the identical algorithm
+// clippyFor calls, without that fragility. Stated plainly per the review's ask: this case is
+// simulated, not exercised through a real cargo/clippy run.
+test('capWarnings never lets warning-level entries crowd an error-level one out of the cap', async () => {
+  const { capWarnings } = await loadClippyModule();
+  const warnings = [
+    ...Array.from({ length: 14 }, (_, i) => ({
+      code: `clippy::synthetic_warning_${i}`,
+      message: `synthetic warning ${i}`,
+      line: i + 1,
+      level: 'warning',
+    })),
+    { code: 'clippy::synthetic_error', message: 'synthetic error', line: 99, level: 'error' },
+  ];
+  // 15 inputs, error last (index 14) — a naive `.slice(0, 10)` on emission order would keep
+  // only the first 10 warnings and drop the error entirely.
+  const capped = capWarnings(warnings);
+  assert.equal(capped.length, 10, 'cap must not be exceeded');
+  const errors = capped.filter((w) => w.level === 'error');
+  assert.equal(errors.length, 1, 'the single error-level entry must survive the cap');
+  assert.equal(errors[0].code, 'clippy::synthetic_error');
+});
+
+test('capWarnings keeps every error even when errors alone exceed the cap', async () => {
+  const { capWarnings } = await loadClippyModule();
+  const warnings = [
+    ...Array.from({ length: 12 }, (_, i) => ({
+      code: `clippy::synthetic_error_${i}`,
+      message: `synthetic error ${i}`,
+      line: i + 1,
+      level: 'error',
+    })),
+    { code: 'clippy::synthetic_warning', message: 'synthetic warning', line: 99, level: 'warning' },
+  ];
+  const capped = capWarnings(warnings);
+  assert.equal(capped.length, 10, 'cap must not be exceeded even when errors alone exceed it');
+  assert.ok(capped.every((w) => w.level === 'error'),
+    'when errors alone exceed the cap, no warning-level entry should take a slot that belongs to an error');
 });
 
 export { runWorkflow };

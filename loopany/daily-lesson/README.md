@@ -194,6 +194,40 @@ track, same 15 minutes, same two headings so grading and `lesson-web.py` are unc
 - **Report on Sunday** the same schema. A review day counts as `dsa_topics` unchanged (it
   teaches nothing new) and keeps the streak like any other day.
 
+**Code feedback on Track A.** The workflow hands over `reviewed_exercises` — every exercise
+the owner finished since the last lesson, each with their `code`, rustlings' official
+`solution`, and scoped `clippy` findings run at **pedantic** level (`-W clippy::pedantic`),
+each carrying `{code, message, line, level: 'warning' | 'error'}`. Turn it into a
+`### Yesterday's code` block at the top of `## Track A · Rust`, above today's assignment.
+
+- **Deep-review exactly one**, chosen in this order: the exercise with clippy warnings;
+  failing that, the one whose code diverges most from the official solution; failing that,
+  the newest. Say what they did well, give **one** concrete improvement as rewritten lines,
+  and note how the official solution differs *only where it genuinely does*. These files are
+  five lines — a mechanical diff teaches nothing.
+- **One line each** for the rest.
+- **`level` splits findings into two different things — never blur them together.**
+  `level: 'error'` is clippy's `correctness` group, which is deny-by-default: it means clippy
+  genuinely **rejected** the code. rustlings passing an exercise says nothing about clippy
+  accepting it, so this is reachable on a "done" exercise — lead with these, name them as
+  real defects, never mix them in among the style notes. `level: 'warning'` is pedantic idiom
+  advice: a tidier way to write something the compiler already accepted. Explain the rule and
+  show the tidier form — the owner did nothing wrong, so don't frame it as a mistake.
+- **Quote clippy lints by name** (`clippy::needless_return`) and explain why the rule exists.
+  Clippy establishes *that* something is off; the lesson explains *why*.
+- **`clippy.ok: false` means unknown, never clean.** Say nothing about lints for that
+  exercise rather than implying it passed.
+- **Findings arrive already capped at 10 per exercise, error-level entries first** — don't
+  re-truncate. A second cap here could drop an error-level finding the first one deliberately
+  kept ahead of the warnings. Show fewer than 10 only for prose reasons, never by slicing.
+- **Omit the whole block when there is nothing worth saying — the most important line here.**
+  Pedantic is chatty, so the temptation to always have something to say is real; repeating the
+  same lint every day is the same failure as writing "looks good!" — both train the owner to
+  stop reading the block. Silence is the correct output for a clean day, and default-level
+  clippy alone would have stayed silent for weeks (see *Current understanding*).
+- Feedback is **read-only**: it never gates the next lesson and never spends Track A's
+  ~8 minutes. Grading is unchanged.
+
 ## Current understanding
 
 - **Both projects exist.** `rustlings/` (94 exercises, own git repo) and `rust-dsa/`
@@ -231,6 +265,23 @@ track, same 15 minutes, same two headings so grading and `lesson-web.py` are unc
   list is compiler-backed, not self-reported. The same workflow short-circuits a duplicate
   same-day wake — today's lesson present and still `assigned` → silent tick, no agent, no
   Timeline line — so a run that starts *has* work to do.
+- **Code feedback is pre-fetched too, and clippy runs at pedantic level on purpose.**
+  `reviewed_exercises` carries the owner's code, the official `solutions/<sec>/<name>.rs`,
+  and `cargo clippy --bin <name> --message-format=json -- -W clippy::pedantic` findings
+  (`{code, message, line, level}`, capped at 10 per exercise, errors before warnings), for up
+  to 5 exercises that are both in `rustlings.done` **and** modified since the previous lesson
+  file's mtime. Never re-read those files or re-run clippy by hand. **Pedantic is on because
+  default clippy produced zero findings across all 17 exercises the owner had completed as of
+  2026-08-04** (`intro1..2`, `variables1..6`, `functions1..5`, `if1..3`, `quiz1`) — default
+  alone would have made this feature silent for weeks. Real pedantic output on that same tree:
+  `if1` → `clippy::semicolon_if_nothing_returned` and `clippy::uninlined_format_args`; `quiz1`
+  → `clippy::uninlined_format_args`. `level: 'error'` is clippy's deny-by-default
+  `correctness` group — a genuine rejection, distinct from the idiom-advice `warning` level —
+  because rustlings passing an exercise says nothing about clippy accepting it. Verified
+  2026-08-04: scoped clippy is 0.35s, cargo replays cached diagnostics (so no cache-busting is
+  needed), and `rustlings/` has **no git baseline** — the official solution is the only
+  reference, there is no diff against the owner's earlier attempt. **Don't simplify pedantic
+  back to default** — that would silently kill the feature again.
 - **Fallback grading commands.** rustlings is **6.5.0 — there is no `rustlings list`.**
   When the pre-fetched data is missing, `cd rustlings && rustlings check-all 2>&1 | tail -3`
   recompiles everything non-interactively and prints `N/94 exercises pending`. It emits
@@ -275,6 +326,22 @@ track, same 15 minutes, same two headings so grading and `lesson-web.py` are unc
   - **Duplicate wakes happen** (07-31 fired twice, 23 min apart). The workflow now gates
     them; if it ever falls back and you see `lessons/<today>.md` already `assigned`, don't
     grade it and don't issue a second one — report `nothing-new` and stop.
+  - **Never edit a file under `rustlings/exercises/` yourself.** Its mtime is the cutoff that
+    decides what gets reviewed; touching one makes stale work look new. Feedback is prose in
+    the lesson, never an edit to the owner's code.
+  - **Clippy runs at pedantic, not default — default was silent.** A sweep across all 17
+    exercises the owner had completed as of 2026-08-04 (`intro1..2`, `variables1..6`,
+    `functions1..5`, `if1..3`, `quiz1`) found zero default-level findings, so pedantic
+    (`-W clippy::pedantic`) is load-bearing, not decoration — real findings only start at
+    `if1` (`clippy::semicolon_if_nothing_returned`, `clippy::uninlined_format_args`) and
+    `quiz1` (`clippy::uninlined_format_args`); `variables*` and `functions*` are genuinely
+    clean, not an artifact of a weaker check. Expect pedantic to be chattier than default; the
+    silence rule (Spec, above) is what keeps that from becoming noise.
+  - **`level: 'error'` and `level: 'warning'` are not the same finding dressed differently.**
+    Error means clippy's deny-by-default `correctness` group rejected the code — a real
+    defect, reachable even on a rustlings-passing exercise. Warning is pedantic idiom advice
+    on code the compiler already accepted. Collapsing them into one undifferentiated list is
+    the one mistake to avoid here.
 
 ## Timeline
 
@@ -325,3 +392,19 @@ track, same 15 minutes, same two headings so grading and `lesson-web.py` are unc
   same type, no ternary needed) vs stacks (LIFO, all three ops `O(1)` *because* of the
   restriction, array-backed at the end vs list-backed at the head — each picking the end its
   structure is fast at, which is the setup for B2's `Stack`).
+- **2026-08-04** — **code feedback on Track A** added. The workflow now pre-fetches
+  `reviewed_exercises` (owner's code + rustlings' official solution + scoped clippy JSON, up
+  to 5 exercises) for exercises finished since the last lesson, and the lesson opens Track A
+  with a `### Yesterday's code` review. Read-only by design — the owner rejected a daily
+  rework step as a tax on a track they already overshoot. **Clippy runs at pedantic
+  (`-W clippy::pedantic`), not default**: a sweep across all 17 exercises the owner had
+  completed found **zero default-level findings**, so default alone would have made the
+  feature silent for weeks; pedantic surfaces real advice starting at `if1`
+  (`clippy::semicolon_if_nothing_returned`, `clippy::uninlined_format_args`) and `quiz1`
+  (`clippy::uninlined_format_args`). Each finding now carries a `level`, and
+  `level: 'error'` (clippy's deny-by-default `correctness` group — a genuine rejection) is
+  surfaced separately from `level: 'warning'` (pedantic idiom advice) because rustlings
+  passing an exercise says nothing about clippy accepting it. Findings arrive pre-capped at
+  10 per exercise, errors before warnings. Workflow source now lives durably at
+  `/Users/tamnm/code/personal/loop-src/daily-lesson.workflow.js` with a test harness beside
+  it, instead of only on the server.

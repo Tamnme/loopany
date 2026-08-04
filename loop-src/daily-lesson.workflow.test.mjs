@@ -3,6 +3,10 @@ import { test } from 'node:test';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const run = promisify(execFile);
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.join(here, 'daily-lesson.workflow.js');
@@ -74,12 +78,22 @@ test('parseBinMap reads exercise paths and drops _sol targets', async () => {
   assert.equal(Object.keys(map).length, 2, 'fixture has exactly 2 exercise targets after _sol exclusion');
 });
 
-test('fixture Cargo.toml uses production inline-array format', async () => {
+test('fixture Cargo.toml is valid and uses production inline-array format', async () => {
   const fixturePath = path.join(here, 'fixture', 'rustlings', 'Cargo.toml');
+  const fixtureDir = path.dirname(fixturePath);
   const content = await fs.readFile(fixturePath, 'utf8');
+
+  // Check format
   assert.ok(content.includes('bin = ['), 'fixture must use inline-array format "bin = ["');
   assert.ok(content.includes('{ name ='), 'fixture must use inline-table format "{ name ="');
   assert.ok(!content.includes('[[bin]]'), 'fixture must not use array-of-tables format "[[bin]]"');
+
+  // Check that manifest is valid by verifying cargo metadata exits 0
+  try {
+    await run('cargo', ['metadata', '--no-deps', '--format-version', '1'], { cwd: fixtureDir });
+  } catch (e) {
+    throw new Error(`fixture Cargo.toml is not a valid manifest: ${e.message}`);
+  }
 });
 
 export { runWorkflow };

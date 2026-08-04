@@ -4,3 +4,8 @@ bin = [
   { name = "lint1", path = "exercises/01_demo/lint1.rs" },
   { name = "lint1_sol", path = "solutions/01_demo/lint1.rs" },
 ]
+
+[package]
+name = "rustlings"
+version = "0.1.0"
+edition = "2021"

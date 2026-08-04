@@ -132,6 +132,38 @@ try {
   binMap = {}; // manifest unreadable — feedback degrades to nothing, never to a failed run
 }
 
+// Which exercises the owner actually worked on since the last lesson. BOTH conditions are
+// required: the done list alone cannot tell yesterday's work from last week's, and mtime
+// alone would surface a file they opened but never got passing.
+// The cutoff is the previous lesson file's own mtime — literally "when the last lesson was
+// issued" — which avoids any timezone arithmetic against the 09:00 Asia/Saigon fire time.
+let since = 0;
+if (prevName) {
+  try {
+    since = (await fs.stat(lessonsDir + '/' + prevName)).mtimeMs;
+  } catch (e) {
+    since = 0; // unreadable — fall through to reviewing nothing rather than everything
+  }
+}
+
+const REVIEW_CAP = 5;
+let selected = [];
+if (since > 0) {
+  const stamped = [];
+  for (const name of doneExercises) {
+    const rel = binMap[name];
+    if (!rel) continue;
+    try {
+      const st = await fs.stat(base + '/rustlings/' + rel);
+      if (st.mtimeMs > since) stamped.push({ name, mtime: st.mtimeMs });
+    } catch (e) {
+      continue; // file gone — skip it, never fail the run
+    }
+  }
+  stamped.sort((a, b) => b.mtime - a.mtime);
+  selected = stamped.slice(0, REVIEW_CAP).map((s) => s.name);
+}
+
 let out = '';
 let cargoOk = false;
 try {
@@ -173,6 +205,7 @@ await agent(
     streak_before_prev: streakBeforePrev,
     gap_days: gapDays,
     debug_bin_map: binMap,
+    selected,
     rustlings: {
       current_exercise: currentExercise,
       done: doneExercises,

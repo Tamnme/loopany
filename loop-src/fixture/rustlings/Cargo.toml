@@ -3,6 +3,8 @@ bin = [
   { name = "clean1_sol", path = "solutions/01_demo/clean1.rs" },
   { name = "lint1", path = "exercises/01_demo/lint1.rs" },
   { name = "lint1_sol", path = "solutions/01_demo/lint1.rs" },
+  { name = "stale1", path = "exercises/01_demo/stale1.rs" },
+  { name = "stale1_sol", path = "solutions/01_demo/stale1.rs" },
 ]
 
 [package]

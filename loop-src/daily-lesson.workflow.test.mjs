@@ -73,9 +73,11 @@ test('parseBinMap reads exercise paths and drops _sol targets', async () => {
   assert.ok(map, 'workflow did not expose debug_bin_map');
   assert.equal(map.clean1, 'exercises/01_demo/clean1.rs');
   assert.equal(map.lint1, 'exercises/01_demo/lint1.rs');
+  assert.equal(map.stale1, 'exercises/01_demo/stale1.rs');
   assert.equal(map.clean1_sol, undefined, '_sol targets must be excluded');
   assert.equal(map.lint1_sol, undefined, '_sol targets must be excluded');
-  assert.equal(Object.keys(map).length, 2, 'fixture has exactly 2 exercise targets after _sol exclusion');
+  assert.equal(map.stale1_sol, undefined, '_sol targets must be excluded');
+  assert.equal(Object.keys(map).length, 3, 'fixture has exactly 3 exercise targets after _sol exclusion');
 });
 
 test('fixture Cargo.toml is valid and uses production inline-array format', async () => {
@@ -94,6 +96,31 @@ test('fixture Cargo.toml is valid and uses production inline-array format', asyn
   } catch (e) {
     throw new Error(`fixture Cargo.toml is not a valid manifest: ${e.message}`);
   }
+});
+
+test('selection requires BOTH done and modified-since-last-lesson', async () => {
+  const p = await runWorkflow();
+  const done = new Set(p.rustlings.done);
+  for (const n of p.selected) {
+    assert.ok(done.has(n), `${n} was selected but is not in rustlings.done`);
+    assert.ok(p.debug_bin_map[n], `${n} was selected but has no bin target`);
+  }
+  assert.ok(p.selected.length <= 5, 'cap of 5 exceeded');
+  assert.equal(new Set(p.selected).size, p.selected.length, 'duplicate entries in selection');
+});
+
+test('an exercise older than the last lesson is not reviewed', async () => {
+  const p = await runWorkflow();
+  // stale1 is done but its mtime predates the previous lesson file — it must never be selected.
+  assert.ok(!p.selected.includes('stale1'),
+    'stale1 is done-but-stale and must never appear in the selection');
+});
+
+test('selection is newest-mtime first', async () => {
+  const p = await runWorkflow();
+  // fixture: lint1.rs mtime is a few ms newer than clean1.rs; stale1 is excluded entirely.
+  assert.deepEqual(p.selected, ['lint1', 'clean1'],
+    'fixture candidates should be lint1 then clean1, newest-mtime first');
 });
 
 export { runWorkflow };

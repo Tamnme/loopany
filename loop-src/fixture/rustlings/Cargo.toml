@@ -1,0 +1,20 @@
+[package]
+name = "rustlings"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "clean1"
+path = "exercises/01_demo/clean1.rs"
+
+[[bin]]
+name = "clean1_sol"
+path = "solutions/01_demo/clean1.rs"
+
+[[bin]]
+name = "lint1"
+path = "exercises/01_demo/lint1.rs"
+
+[[bin]]
+name = "lint1_sol"
+path = "solutions/01_demo/lint1.rs"

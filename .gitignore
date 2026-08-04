@@ -7,3 +7,7 @@ rust-dsa/
 .superpowers/
 
 .DS_Store
+
+# task 1
+fixture/rustlings/target/
+fixture/rust-dsa/target/

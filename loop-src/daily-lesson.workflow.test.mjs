@@ -10,9 +10,38 @@ const run = promisify(execFile);
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.join(here, 'daily-lesson.workflow.js');
+const FIXTURE = path.join(here, 'fixture');
+
+// Git does not preserve mtimes: a fresh clone, or enough checkouts, can leave every fixture
+// file stamped with the same checkout time. The selection tests only prove anything if the
+// lesson-vs-exercise and exercise-vs-exercise mtime relationships are real, so the harness
+// owns those timestamps explicitly here rather than trusting whatever the filesystem has —
+// spread by whole days so the intended ordering is unambiguous on any machine.
+async function stampFixtureMtimes() {
+  const day = (s) => new Date(s + 'T00:00:00Z');
+  const stamp = async (rel, date) => {
+    await fs.utimes(path.join(FIXTURE, rel), date, date);
+  };
+  await stamp('loopany/daily-lesson/lessons/2026-08-01.md', day('2026-08-01'));
+  await stamp('loopany/daily-lesson/lessons/2026-08-02.md', day('2026-08-02')); // newest lesson = the "since" cutoff
+  // stale1: done but must read as OLDER than the cutoff lesson above.
+  await stamp('rustlings/exercises/01_demo/stale1.rs', day('2026-07-01'));
+  await stamp('rustlings/solutions/01_demo/stale1.rs', day('2026-07-01'));
+  // clean1 and lint1: both AFTER the cutoff lesson, and a whole day apart from each other so
+  // "newest-mtime first" (lint1 before clean1) does not depend on sub-second timestamps.
+  await stamp('rustlings/exercises/01_demo/clean1.rs', day('2026-08-10'));
+  await stamp('rustlings/solutions/01_demo/clean1.rs', day('2026-08-10'));
+  await stamp('rustlings/exercises/01_demo/lint1.rs', day('2026-08-11'));
+  await stamp('rustlings/solutions/01_demo/lint1.rs', day('2026-08-11'));
+}
 
 async function runWorkflow(opts = {}) {
-  const baseVal = opts.base || path.join(here, 'fixture');
+  const baseVal = opts.base || FIXTURE;
+  if (baseVal === FIXTURE) {
+    // Re-stamp before every fixture run so no test can accidentally run against whatever
+    // mtimes the filesystem happens to have. Never touches the real tree (opts.base skips this).
+    await stampFixtureMtimes();
+  }
   let body = await fs.readFile(SRC, 'utf8');
   
   const searchStr = "const base = '/Users/tamnm/code/personal';";

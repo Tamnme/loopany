@@ -377,6 +377,7 @@ await agent(
     'history is every lesson so far with its graded type; streak_before_prev is the streak over those, so your reported streak is it +1 if you grade prev_lesson done|partial, else 0; ' +
     'gap_days > 0 means a run FAILED and the owner got no lesson those days — say so in the opening note, never count it as their skip; ' +
     'rustlings.done lists exercises rustlings recorded as passing; cargo carries rust-dsa\'s test state. ' +
+    'cargo.ok false means the run was skipped or failed — treat it as UNKNOWN, never as "no tests exist", and run `cargo test` yourself. ' +
     'Today\'s lesson does not exist yet — this is not a duplicate wake, that case never reaches you. ' +
     'is_review_day true means it is SUNDAY: follow the brief\'s "Sunday · Review day" section instead of the ' +
     'curriculum — no new concept on either track, a 5-question test as Track B and a small project as Track A, ' +

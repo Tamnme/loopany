@@ -130,6 +130,35 @@ A new section at the top of `## Track A · Rust`, before today's assignment.
 6. **End to end** — the next scheduled run produces a lesson whose Track A opens with the
    block, or omits it cleanly when the owner's exercises lint clean and match the solution.
 
+## Facts discovered during implementation
+
+These were not known when the design above was written. They changed the implementation and
+are recorded here because the reasoning is not recoverable from the code alone.
+
+| Fact | Evidence | Consequence |
+|---|---|---|
+| **The loopany host caps the WHOLE workflow at 30s** | `@crewlet/loopany/dist/workflow.js`: `TIMEOUT_MS = (Number(process.env.LOOPANY_WORKFLOW_TIMEOUT_SECONDS) \|\| 30) * 1000`; `~/Library/LaunchAgents/ai.loopany.daemon.plist` sets only `PATH`, so the default stands | Any per-command timeout above the remaining budget can never fire. When the cap trips, the run gets **no prefetched data at all** plus a "diagnose the failure" task — grading, streak and the spaced-repetition ladder all vanish. Every external call is now budgeted from one `HOST_TIMEOUT_MS` constant |
+| **Default clippy finds nothing on teaching-sized exercises** | Swept all 17 completed exercises: zero diagnostics. `-W clippy::pedantic` on `if1` alone yields 2 | Pedantic is enabled deliberately. Reverting it to default silently kills the feature while leaving every test green |
+| **clippy's `correctness` group is deny-by-default, so it reports at `level: "error"`** | clippy lint-configuration docs; reproduced with `clippy::eq_op` | Filtering to `level === 'warning'` made a clippy-REJECTED exercise indistinguishable from a clean one. Both levels are now surfaced, with `level` on each finding |
+| **Lesson files are rewritten after they are issued** | `2026-08-04.md`: birth `02:01:42Z`, mtime `02:51:04Z` — the grading pass rewrites front-matter, and `lesson-web.py`'s answer write-back touches it again | The selection cutoff must be **birthtime**, not mtime. With mtime, answering Track B in the evening hides that evening's Rust work from review. Birthtime is safe only because the pre-fetch runs before grading |
+| **`warnings` is not clippy-only** | Real `rustlings/Cargo.toml` has `[lints]` (`unsafe_code` forbid, `clippy::todo` forbid, `empty_loop` forbid, `infinite_loop`/`mem_forget` deny); compile errors are admitted as `ok:true` | A `level:'error'` entry may be a clippy correctness lint, a rustlings-forbidden lint, or a bare rustc code like `E0061`. The brief tells the agent to quote codes as given rather than assume a `clippy::` prefix |
+| **`child_process` reads `timeout: 0` as NO timeout** | Node docs; reproduced | A spent budget must *skip* a call, never pass `0`. Both call sites guard this explicitly |
+| **rustlings' `Cargo.toml` uses an inline `bin = [{ name, path }]` array** | `rustlings/Cargo.toml` — 94 non-`_sol` entries | A fixture using `[[bin]]` blocks instead caused a regex that matched nothing in production while tests stayed green. Fixtures must mirror production's shape, not a convenient one |
+
+## What this cost, and why
+
+Eight Criticals were found and fixed during implementation, plus five findings in the final
+whole-branch review. **Every Critical was a green test suite hiding a real break, and most
+traced to the fixture rather than the logic.**
+
+The fixture was necessary — the loop's duplicate-wake gate means a harness pointed at the real
+tree captures `null`, making every assertion vacuous — but it is also the single largest source
+of false confidence in this work. What kept it honest was requiring, for every assertion, that
+someone break the covered logic and show it going red. Three of the eight Criticals were found
+that way; the other five came from probing the *real* tree, which no fixture test can substitute
+for.
+
 ## Notes
 
-The enclosing directory is not a git repository, so this spec is written but not committed.
+The enclosing directory was not a git repository when this spec was written; it was initialised
+at `7eda21c` so this work could be reviewed and rolled back.

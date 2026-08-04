@@ -113,6 +113,25 @@ try {
   currentExercise = null; // rustlings/ missing or unreadable — agent bootstraps / falls back to check-all
 }
 
+// Exercise name -> source path, straight from rustlings' own manifest, so the map tracks
+// their layout instead of hardcoding one. `<name>_sol` targets point at the official
+// solutions and are excluded here; the solution path is derived from the exercise path.
+const parseBinMap = (toml) => {
+  const map = {};
+  for (const m of toml.matchAll(/name\s*=\s*"([^"]+)"\s*path\s*=\s*"([^"]+)"/g)) {
+    if (m[1].endsWith('_sol')) continue;
+    map[m[1]] = m[2];
+  }
+  return map;
+};
+
+let binMap = {};
+try {
+  binMap = parseBinMap(await fs.readFile(base + '/rustlings/Cargo.toml', 'utf8'));
+} catch (e) {
+  binMap = {}; // manifest unreadable — feedback degrades to nothing, never to a failed run
+}
+
 let out = '';
 let cargoOk = false;
 try {
@@ -153,6 +172,7 @@ await agent(
     history,
     streak_before_prev: streakBeforePrev,
     gap_days: gapDays,
+    debug_bin_map: binMap,
     rustlings: {
       current_exercise: currentExercise,
       done: doneExercises,

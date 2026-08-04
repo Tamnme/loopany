@@ -63,4 +63,15 @@ test('smoke test against the real tree', async () => {
   }
 });
 
+test('parseBinMap reads exercise paths and drops _sol targets', async () => {
+  const p = await runWorkflow();
+  const map = p.debug_bin_map;
+  assert.ok(map, 'workflow did not expose debug_bin_map');
+  assert.equal(map.clean1, 'exercises/01_demo/clean1.rs');
+  assert.equal(map.lint1, 'exercises/01_demo/lint1.rs');
+  assert.equal(map.clean1_sol, undefined, '_sol targets must be excluded');
+  assert.equal(map.lint1_sol, undefined, '_sol targets must be excluded');
+  assert.equal(Object.keys(map).length, 2, 'fixture has exactly 2 exercise targets after _sol exclusion');
+});
+
 export { runWorkflow };

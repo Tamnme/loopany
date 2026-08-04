@@ -126,16 +126,18 @@ async function runWorkflow(opts = {}) {
   }
   body = body.replace(searchStr, `const base = '${baseVal}';`);
 
-  // Finding 4: lets a test force the reviewed_exercises assembly loop's wall-clock budget to
-  // an exact value (e.g. 0, to prove the loop degrades to nothing rather than throwing once
-  // its budget is already spent) without needing a real slow clippy invocation, which would be
-  // both slow and flaky. Source-text surgery, same technique as the `base` override above.
-  if (opts.assemblyDeadlineOverrideMs !== undefined) {
-    const deadlineStr = /const ASSEMBLY_DEADLINE_MS = \d+;/;
-    if (!deadlineStr.test(body)) {
-      throw new Error('Could not find the exact ASSEMBLY_DEADLINE_MS constant declaration in the workflow file');
+  // Lets a test force the shared host-timeout budget (WORKFLOW_START / HOST_TIMEOUT_MS /
+  // remainingMs) to an exact value — e.g. 0, to prove both the cargo-test skip guard and the
+  // reviewed_exercises assembly loop degrade to nothing rather than throwing once the budget is
+  // already spent — without needing a real slow external command, which would be both slow and
+  // flaky. Source-text surgery, same technique as the `base` override above. Supersedes the old
+  // per-loop ASSEMBLY_DEADLINE_MS override now that both budgets are computed off one constant.
+  if (opts.hostTimeoutOverrideMs !== undefined) {
+    const hostTimeoutStr = /const HOST_TIMEOUT_MS = \d+;/;
+    if (!hostTimeoutStr.test(body)) {
+      throw new Error('Could not find the exact HOST_TIMEOUT_MS constant declaration in the workflow file');
     }
-    body = body.replace(deadlineStr, `const ASSEMBLY_DEADLINE_MS = ${opts.assemblyDeadlineOverrideMs};`);
+    body = body.replace(hostTimeoutStr, `const HOST_TIMEOUT_MS = ${opts.hostTimeoutOverrideMs};`);
   }
 
   const wrapped = `export default async function(){\n${body}\n}`;
@@ -252,29 +254,36 @@ test('one unreadable exercise does not cost the other four in reviewed_exercises
 // (clippy 120000ms x up to 5 sequential calls, cargo test 240000ms) could never fire before
 // the host's own cap does — so a single stuck `cargo clippy` (e.g. blocked on rustlings'
 // build-directory lock) used to cost the ENTIRE prefetch (prev_lesson, history, due_review,
-// streak, cargo — all of it), not just the feedback block. This proves the assembly loop
-// itself degrades gracefully: forcing its budget to 0 must yield an empty
-// reviewed_exercises without throwing, while every other prefetched field survives untouched.
-test('reviewed_exercises assembly loop degrades to empty, never throws, once its wall-clock budget is already spent (finding 4)', async () => {
-  const p = await runWorkflow({ assemblyDeadlineOverrideMs: 0 });
-  assert.ok(p, 'workflow must still call agent() when the assembly budget is already spent');
-  assert.ok(p.selected.length > 0, 'fixture setup: selection itself must be unaffected by the assembly deadline');
+// streak, cargo — all of it), not just the feedback block. cargo test and the assembly loop now
+// share ONE host-timeout budget (WORKFLOW_START / HOST_TIMEOUT_MS / remainingMs), so forcing
+// that shared budget to 0 must degrade BOTH: cargo test is skipped (see the dedicated
+// timeout-vs-skip proof test further below for direct evidence it is never invoked with an
+// unbounded timeout) and the assembly loop yields an empty reviewed_exercises — while every
+// other prefetched field, gathered before either budget-gated call runs, survives untouched.
+test('reviewed_exercises assembly loop and cargo test both degrade to empty, never throw, once the shared host-timeout budget is already spent (finding 4)', async () => {
+  const p = await runWorkflow({ hostTimeoutOverrideMs: 0 });
+  assert.ok(p, 'workflow must still call agent() when the host-timeout budget is already spent');
+  assert.ok(p.selected.length > 0, 'fixture setup: selection itself must be unaffected by the host-timeout budget');
   assert.deepEqual(p.reviewed_exercises, [],
-    'with zero assembly budget, no exercise should be attempted, and the loop must not throw');
-  // The rest of the prefetch must survive completely — losing it all over a stuck clippy call
+    'with zero budget, no exercise should be attempted, and the loop must not throw');
+  assert.equal(p.cargo.ok, false, 'cargo test must be skipped (ok:false), never run with an unbounded timeout');
+  assert.equal(p.cargo.summary, '', 'cargo.summary must be empty when the call is skipped');
+  // The rest of the prefetch must survive completely — losing it all over a stuck external call
   // is exactly the failure this fix closes.
-  assert.ok(p.prev_lesson, 'prev_lesson must still be present even when the feedback block is skipped entirely');
+  assert.ok(p.prev_lesson, 'prev_lesson must still be present even when both budget-gated calls are skipped');
   assert.ok(Array.isArray(p.history) && p.history.length > 0, 'history must still be present');
   assert.ok(Array.isArray(p.due_review), 'due_review must still be present');
   assert.equal(typeof p.streak_before_prev, 'number', 'streak_before_prev must still be present');
-  assert.ok(p.cargo, 'cargo must still be present');
+  assert.ok(p.cargo, 'cargo must still be present as an object, even though its call was skipped');
 });
 
-// With a generous (production-sized) budget, the loop must behave exactly as before — this
-// guards against an off-by-one or inverted comparison in the deadline check silently capping
-// the fixture's 2+ qualifying candidates down to fewer than they should be.
-test('a generous assembly budget still gathers every qualifying exercise (finding 4 regression guard)', async () => {
-  const p = await runWorkflow({ assemblyDeadlineOverrideMs: 60000 });
+// With a generous (production-sized) budget, both cargo test and the assembly loop must behave
+// exactly as before — this guards against an off-by-one or inverted comparison in either budget
+// check silently capping the fixture's qualifying candidates, or skipping cargo test, when there
+// was no need to.
+test('a generous host-timeout budget still runs cargo test and gathers every qualifying exercise (finding 4 regression guard)', async () => {
+  const p = await runWorkflow({ hostTimeoutOverrideMs: 60000 });
+  assert.equal(p.cargo.ok, true, 'a 60s budget must be more than enough for cargo test to actually run');
   assert.equal(p.reviewed_exercises.length, p.selected.length,
     'a 60s budget must be more than enough for the fixture — every selected exercise should be gathered');
 });
@@ -293,10 +302,115 @@ test('clippy per-command timeout fits inside the loopany host\'s 30s workflow ca
     'the cargo clippy run() call must use CLIPPY_TIMEOUT_MS, not a hardcoded literal');
 });
 
-test('the pre-existing cargo test timeout is untouched — out of scope for finding 4', async () => {
+// Finding 4 follow-up: the old fixed 240000ms cargo-test timeout could never fire inside the
+// loopany host's 30s workflow cap, so a stuck/slow `cargo test` used to cost the ENTIRE prefetch
+// exactly the way a stuck clippy call could before CLIPPY_TIMEOUT_MS bounded it. cargo test's
+// timeout must now be Math.min(CARGO_TEST_HARD_CAP_MS, remainingMs(...)) — a computed budget
+// derived from the same shared HOST_TIMEOUT_MS as everything else — never a stray literal.
+test("cargo test's timeout is a computed budget derived from CARGO_TEST_HARD_CAP_MS and remainingMs(), not a fixed literal (finding 4 follow-up)", async () => {
   const src = await fs.readFile(SRC, 'utf8');
-  assert.match(src, /run\('cargo',\s*\['test'\][\s\S]{0,80}timeout:\s*240000/,
-    'cargo test\'s timeout must remain 240000ms — changing it is out of scope for this fix and risks the grading data the lesson depends on');
+  const m = /CARGO_TEST_HARD_CAP_MS\s*=\s*(\d+)/.exec(src);
+  assert.ok(m, 'expected a named CARGO_TEST_HARD_CAP_MS constant so the value cannot silently drift back up');
+  const hardCapMs = Number(m[1]);
+  assert.ok(hardCapMs <= 10000,
+    `cargo test's hard cap (${hardCapMs}ms) must stay well under the loopany host's 30s workflow cap`);
+  assert.ok(hardCapMs >= 1000,
+    `cargo test's hard cap (${hardCapMs}ms) must stay well above real cargo test's observed ~0.42s warm runtime`);
+  assert.match(src, /run\('cargo',\s*\['test'\][\s\S]{0,120}timeout:\s*cargoBudgetMs/,
+    'the cargo test run() call must use a computed cargoBudgetMs, never a hardcoded literal like the old 240000');
+  assert.match(src, /cargoBudgetMs\s*=\s*Math\.min\(\s*CARGO_TEST_HARD_CAP_MS\s*,\s*remainingMs\(/,
+    "cargo test's budget must be Math.min(CARGO_TEST_HARD_CAP_MS, remainingMs(...)), not the old fixed 240000ms");
+});
+
+test('cargo payload shape (ok, summary, passing_tests, failing_tests, compile_errors) is unchanged on the happy path', async () => {
+  const p = await runWorkflow();
+  assert.equal(typeof p.cargo.ok, 'boolean');
+  assert.equal(typeof p.cargo.summary, 'string');
+  assert.ok(Array.isArray(p.cargo.passing_tests));
+  assert.ok(Array.isArray(p.cargo.failing_tests));
+  assert.ok(Array.isArray(p.cargo.compile_errors));
+  assert.equal(p.cargo.ok, true, "the fixture rust-dsa crate's tests pass — cargo.ok should be true");
+  assert.ok(p.cargo.passing_tests.includes('tests::it_works'),
+    'expected the fixture rust-dsa test name to appear in passing_tests');
+});
+
+// remainingMs is extracted straight out of the real source (same technique as loadClippyModule
+// below) so these are unit tests of the actual function the workflow calls, not a reimplementation.
+async function loadTimingModule() {
+  const body = await fs.readFile(SRC, 'utf8');
+  const startMarker = 'const WORKFLOW_START = Date.now();';
+  const endMarker = "const base = '/Users/tamnm/code/personal';";
+  const start = body.indexOf(startMarker);
+  const end = body.indexOf(endMarker);
+  if (start === -1 || end === -1) {
+    throw new Error('Could not locate the WORKFLOW_START/HOST_TIMEOUT_MS/remainingMs block in the workflow source');
+  }
+  const slice = body.slice(start, end);
+  const wrapped = `${slice}\nexport { remainingMs, HOST_TIMEOUT_MS, WORKFLOW_START, BASE_RESERVE_MS };\n`;
+  const tmp = path.join(here, `.wf.timing.harness.${Date.now()}.${Math.random().toString(36).slice(2)}.mjs`);
+  await fs.writeFile(tmp, wrapped);
+  try {
+    return await import(tmp + '?t=' + process.hrtime.bigint());
+  } finally {
+    await fs.rm(tmp, { force: true });
+  }
+}
+
+test('remainingMs shrinks as wall-clock time passes', async () => {
+  const { remainingMs } = await loadTimingModule();
+  const a = remainingMs();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const b = remainingMs();
+  assert.ok(b < a, `expected remainingMs() to shrink as real time passes, got ${a} then ${b}`);
+});
+
+test('remainingMs never goes negative, even when the reserve alone exceeds the whole host budget', async () => {
+  const { remainingMs, HOST_TIMEOUT_MS } = await loadTimingModule();
+  const result = remainingMs(HOST_TIMEOUT_MS + 1_000_000);
+  assert.equal(result, 0, 'remainingMs must clamp to 0, never go negative, once the reserve exceeds the budget');
+});
+
+test('remainingMs respects its reserve argument — a bigger reserve leaves less remaining', async () => {
+  const { remainingMs, BASE_RESERVE_MS } = await loadTimingModule();
+  const small = remainingMs(BASE_RESERVE_MS);
+  const big = remainingMs(BASE_RESERVE_MS + 2000);
+  assert.ok(big < small, 'a larger reserve must leave less remaining budget than a smaller one');
+  assert.ok(Math.abs((small - big) - 2000) <= 50,
+    `expected the difference to track the 2000ms reserve delta, got ${small - big}`);
+});
+
+// Dedicated fixture crate whose single test sleeps 1500ms — used ONLY by the two tests below.
+// It exists so "the call was skipped" can be proven by TIMING (it completes in a tiny fraction
+// of 1500ms) rather than by inspecting source code, per the review's ask: prove the zero-budget
+// path skips the call instead of passing timeout: 0 (which child_process treats as NO TIMEOUT).
+const SLOW_CARGO_BASE = path.join(FIXTURE, 'slow-cargo-scenario');
+
+test('a spent host-timeout budget SKIPS cargo test rather than passing timeout: 0 (finding 4 follow-up)', async () => {
+  const startedAt = Date.now();
+  const p = await runWorkflow({ base: SLOW_CARGO_BASE, hostTimeoutOverrideMs: 0 });
+  const elapsedMs = Date.now() - startedAt;
+  assert.ok(p, 'workflow must still call agent() when the host budget is already spent');
+  // A real (unbounded) invocation would take at least the fixture's 1500ms sleep. Completing in
+  // well under that proves cargo test was never started — not that it happened to run fast.
+  assert.ok(elapsedMs < 800,
+    `expected the skipped cargo test call to add negligible time, took ${elapsedMs}ms — this close ` +
+      "to the fixture's 1500ms sleep would suggest it actually ran with an unbounded timeout");
+  assert.equal(p.cargo.ok, false, 'cargo.ok must be false when the call is skipped, never a thrown error');
+  assert.equal(p.cargo.summary, '', 'cargo.summary must be empty when the call is skipped');
+  assert.deepEqual(p.cargo.passing_tests, []);
+  assert.deepEqual(p.cargo.failing_tests, []);
+  assert.deepEqual(p.cargo.compile_errors, []);
+});
+
+test('control: the slow-cargo fixture genuinely takes >= 1.4s when the budget is NOT spent (validates the skip-proof test above)', async () => {
+  const startedAt = Date.now();
+  const p = await runWorkflow({ base: SLOW_CARGO_BASE });
+  const elapsedMs = Date.now() - startedAt;
+  assert.ok(p);
+  assert.equal(p.cargo.ok, true, 'with a real budget, cargo test should actually run and pass');
+  assert.ok(elapsedMs >= 1400,
+    `expected the real (unskipped) cargo test call to take >= ~1500ms (its sleep), took ${elapsedMs}ms — ` +
+      'if this is fast, the skip-proof test above is not proving anything');
 });
 
 test('smoke test against the real tree', async () => {

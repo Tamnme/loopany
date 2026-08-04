@@ -3,6 +3,31 @@ const { execFile } = await import('node:child_process');
 const { promisify } = await import('node:util');
 const run = promisify(execFile);
 
+// The loopany host kills the ENTIRE workflow — not just one block inside it — after
+// LOOPANY_WORKFLOW_TIMEOUT_SECONDS seconds, which defaults to 30 (@crewlet/loopany/dist/workflow.js:
+// `TIMEOUT_MS = (Number(process.env.LOOPANY_WORKFLOW_TIMEOUT_SECONDS) || 30) * 1000`). The
+// LaunchAgent plist (~/Library/LaunchAgents/ai.loopany.daemon.plist) sets only PATH, so this
+// default stands in production. WORKFLOW_START anchors every per-call budget below to wall-clock
+// time actually spent in THIS run — raising any per-call timeout past what remainingMs() below
+// says is left is meaningless, because the host kills the whole process first, prefetch and all.
+const WORKFLOW_START = Date.now();
+const HOST_TIMEOUT_MS = 30000;
+
+// Held back from every remainingMs() calculation below for everything that ISN'T the external
+// command being budgeted right then: node/module startup, the ~6 lesson-file reads + stat calls,
+// the rustlings state/manifest reads, and the final `await agent(...)` hand-off. None of that is
+// individually slow, but none of it is free either, and all of it happens AROUND the two
+// external-command budgets below, never inside them. 5000ms sits comfortably above everything
+// that work has measured at.
+const BASE_RESERVE_MS = 5000;
+
+// Milliseconds left before the host's hard kill, minus `reserve` (defaults to BASE_RESERVE_MS).
+// Passing a larger reserve holds back extra headroom for work that still has to happen after the
+// call being budgeted — see CARGO_TEST_HARD_CAP_MS below. Never negative: callers that skip a
+// call once this hits 0 depend on that floor.
+const remainingMs = (reserve = BASE_RESERVE_MS) =>
+  Math.max(0, HOST_TIMEOUT_MS - (Date.now() - WORKFLOW_START) - reserve);
+
 const base = '/Users/tamnm/code/personal';
 const lessonsDir = base + '/loopany/daily-lesson/lessons';
 
@@ -266,14 +291,36 @@ const clippyFor = async (name) => {
   }
 };
 
+// cargo test's budget must fit inside whatever the host cap has left, not a fixed literal that
+// can outlive the whole workflow — see WORKFLOW_START / HOST_TIMEOUT_MS / remainingMs above.
+// 8000ms is the hard cap: cargo test measured 0.42s warm on this dependency-free lib crate
+// (empty [dependencies], so even a cold build only compiles the crate + libtest locally, never a
+// crates.io fetch) — 8000ms is ~19x that, comfortably covering a cold build of the eventual
+// 8-data-structure crate without reopening the "generous enough to outlive the host's 30s box"
+// bug this closes.
+const CARGO_TEST_HARD_CAP_MS = 8000;
+// Held back on top of BASE_RESERVE_MS so the feedback-assembly loop below still has a floor of
+// budget to work with even in the worst case where cargo test uses every millisecond it's given.
+// cargo test is GRADING data (it judges Track B and Sunday review days) and gets first claim on
+// the budget; the feedback loop is a nicety and gets only what's left — never the reverse.
+const FEEDBACK_LOOP_RESERVE_MS = 3000;
+
 let out = '';
 let cargoOk = false;
-try {
-  const res = await run('cargo', ['test'], { cwd: base + '/rust-dsa', timeout: 240000, maxBuffer: 8e6 });
-  out = res.stdout + res.stderr;
-  cargoOk = true;
-} catch (e) {
-  out = (e.stdout || '') + (e.stderr || '') + (e.stdout || e.stderr ? '' : String(e));
+const cargoBudgetMs = Math.min(CARGO_TEST_HARD_CAP_MS, remainingMs(BASE_RESERVE_MS + FEEDBACK_LOOP_RESERVE_MS));
+// child_process's `timeout: 0` means NO TIMEOUT, not "no time left" — passing 0 or a negative
+// number here would silently reopen the exact bug this closes (an unbounded call that can blow
+// the host's 30s cap on its own). Skip the call entirely instead: cargoOk stays false and `out`
+// stays empty, the same degraded shape a genuine cargo failure already produces in the catch
+// below — never a thrown error.
+if (cargoBudgetMs > 0) {
+  try {
+    const res = await run('cargo', ['test'], { cwd: base + '/rust-dsa', timeout: cargoBudgetMs, maxBuffer: 8e6 });
+    out = res.stdout + res.stderr;
+    cargoOk = true;
+  } catch (e) {
+    out = (e.stdout || '') + (e.stderr || '') + (e.stdout || e.stderr ? '' : String(e));
+  }
 }
 
 const passing = [...out.matchAll(/^test (\S+) \.\.\. ok$/gm)].map((m) => m[1]);
@@ -285,19 +332,16 @@ const compileErrors = out.split('\n').filter((l) => l.startsWith('error')).slice
 // parallel, so swapping the prefix is exact, not a guess.
 //
 // This loop is the only place in the workflow that can run up to 5 SEQUENTIAL external
-// commands (one clippy invocation per exercise), so it gets its own wall-clock budget on top
-// of CLIPPY_TIMEOUT_MS above — the same 30s loopany host cap applies to the whole workflow,
-// not just this block, so a run that blows its budget here doesn't get partial feedback, it
-// loses prev_lesson/history/due_review/streak/cargo too. 15s (half the host's cap) leaves
-// headroom for everything else the workflow does before and after this loop; if the budget is
-// already spent, stop adding entries and hand over whatever was gathered — partial feedback,
-// or none, is always better than losing the entire prefetch. Never make this loop the reason
-// the whole run fails.
-const ASSEMBLY_DEADLINE_MS = 15000;
-const assemblyStart = Date.now();
+// commands (one clippy invocation per exercise), so it lives off the SAME remainingMs() budget
+// as cargo test above rather than its own fixed deadline. cargo test already took first claim
+// (see CARGO_TEST_HARD_CAP_MS / FEEDBACK_LOOP_RESERVE_MS above — it is GRADING data, this loop
+// is a nicety), so by the time this runs, remainingMs() already reflects whatever cargo test
+// actually spent. If the budget is already gone, stop before starting a single exercise and hand
+// over whatever was gathered — partial feedback, or none, is always better than losing the
+// entire prefetch. Never make this loop the reason the whole run fails.
 const reviewedExercises = [];
 for (const name of selected) {
-  if (Date.now() - assemblyStart >= ASSEMBLY_DEADLINE_MS) break;
+  if (remainingMs() <= 0) break;
   const rel = binMap[name];
   // selected is already filtered against this same binMap above, so rel should never be
   // missing here — but that is an invariant held ACROSS two separate loops with nothing

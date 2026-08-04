@@ -176,6 +176,45 @@ if (since > 0) {
   selected = stamped.slice(0, REVIEW_CAP).map((s) => s.name);
 }
 
+// Scoped clippy: every exercise is its own bin target, so this lints one 5-line file, not
+// 94 crates — measured at 0.35s. JSON format carries the lint NAME, which the prose quotes.
+// Cargo replays cached clippy diagnostics on repeat runs, so no cache-busting flag is used —
+// and source files are never touched here, because that would corrupt the mtime cutoff above.
+const parseClippyJson = (text) => {
+  const out = [];
+  for (const line of text.split('\n')) {
+    if (!line.startsWith('{')) continue;
+    let j;
+    try { j = JSON.parse(line); } catch (e) { continue; }
+    if (j.reason !== 'compiler-message') continue;
+    const m = j.message;
+    if (!m || m.level !== 'warning' || !m.code) continue;
+    out.push({ code: m.code.code, message: m.message, line: m.spans?.[0]?.line_start ?? null });
+  }
+  return out;
+};
+
+const clippyFor = async (name) => {
+  try {
+    const res = await run(
+      'cargo',
+      ['clippy', '--quiet', '--message-format=json', '--bin', name],
+      { cwd: base + '/rustlings', timeout: 120000, maxBuffer: 8e6 },
+    );
+    return { ok: true, warnings: parseClippyJson(res.stdout + res.stderr) };
+  } catch (e) {
+    const text = (e.stdout || '') + (e.stderr || '');
+    // ok is UNKNOWN unless the output actually contains parseable compiler-message JSON.
+    // A non-zero exit WITH such output means real compile errors — still a usable signal,
+    // so ok: true. A non-zero exit with no JSON at all (e.g. cargo's own "no bin target
+    // named X" manifest error) means clippy never ran — we genuinely do not know, and that
+    // must never be read as "clean".
+    const hasJson = text.split('\n').some((l) => l.startsWith('{'));
+    if (!hasJson) return { ok: false, warnings: [] };
+    return { ok: true, warnings: parseClippyJson(text) };
+  }
+};
+
 let out = '';
 let cargoOk = false;
 try {

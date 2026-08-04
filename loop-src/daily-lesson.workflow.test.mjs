@@ -248,4 +248,66 @@ test('selection caps at 5 and is newest-mtime first across more than 5 candidate
     'selection must be capped at the 5 newest-mtime qualifying exercises');
 });
 
+// reviewed_exercises does not exist until Task 5 assembles it (see the still-failing
+// "reviewed_exercises is present and well-shaped" test above), so clippyFor cannot be
+// observed through the agent() payload yet. Instead this extracts the exact clippyFor +
+// parseClippyJson block straight out of the real source file — the same slice Task 5 will
+// wire into reviewed_exercises — and runs it directly against the fixture's own real cargo
+// project. No mocking of cargo/clippy: this is a real ~0.35s-per-bin clippy invocation,
+// same as production.
+async function callClippyFor(name, baseVal = FIXTURE) {
+  if (baseVal === FIXTURE) await stampFixtureMtimes();
+  const body = await fs.readFile(SRC, 'utf8');
+  const startMarker = '// Scoped clippy:';
+  const endMarker = "let out = '';";
+  const start = body.indexOf(startMarker);
+  const end = body.indexOf(endMarker);
+  if (start === -1 || end === -1) {
+    throw new Error('Could not locate the clippy block (parseClippyJson/clippyFor) in the workflow source');
+  }
+  const slice = body.slice(start, end);
+  const wrapped =
+    "const fs = await import('node:fs/promises');\n" +
+    "const { execFile } = await import('node:child_process');\n" +
+    "const { promisify } = await import('node:util');\n" +
+    'const run = promisify(execFile);\n' +
+    `const base = ${JSON.stringify(baseVal)};\n` +
+    `${slice}\n` +
+    'export { clippyFor };\n';
+  const tmp = path.join(here, `.wf.clippy.harness.${Date.now()}.${Math.random().toString(36).slice(2)}.mjs`);
+  await fs.writeFile(tmp, wrapped);
+  try {
+    const mod = await import(tmp + '?t=' + process.hrtime.bigint());
+    return await mod.clippyFor(name);
+  } finally {
+    await fs.rm(tmp, { force: true });
+  }
+}
+
+test('clippy finds real lint names on a dirty exercise (lint1)', async () => {
+  const result = await callClippyFor('lint1');
+  assert.equal(result.ok, true, 'lint1 compiles fine — clippy must be able to run');
+  assert.ok(Array.isArray(result.warnings));
+  const codes = result.warnings.map((w) => w.code);
+  assert.ok(codes.includes('clippy::needless_return'),
+    `expected clippy::needless_return among ${JSON.stringify(codes)}`);
+  for (const w of result.warnings) {
+    assert.match(w.code, /^clippy::/, 'expected a clippy lint name, not a scraped human-readable string');
+    assert.equal(typeof w.message, 'string');
+    assert.ok(w.message.length > 0);
+  }
+});
+
+test('clippy reports zero warnings on a clean exercise (clean1), distinguishable from unknown', async () => {
+  const result = await callClippyFor('clean1');
+  assert.deepEqual(result, { ok: true, warnings: [] },
+    'a clean exercise must read as ok:true with no warnings, not merely "warnings is empty"');
+});
+
+test('clippy on a bin that does not exist in the manifest is ok:false, not a false "clean"', async () => {
+  const result = await callClippyFor('does_not_exist_in_manifest_xyz');
+  assert.deepEqual(result, { ok: false, warnings: [] },
+    'a clippy invocation that cannot run at all must read as unknown (ok:false), never as clean');
+});
+
 export { runWorkflow };

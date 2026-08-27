@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+"""tea — Room 402 Late-Night Conductor & Architect CLI.
+
+Commands:
+  tea                           # Open the Room 402 Web Studio in browser
+  tea ping                      # Trigger an immediate macOS notification & pop up the browser
+  tea ping --after 30m          # Wait 30m, then ping and pop up the browser
+  tea ping --every 2h           # Run periodic pings and browser popups in background
+  tea quiz                      # Take an interactive masterclass podium quiz in the terminal
+  tea chat                      # Start a late-night tea chat in the terminal
+  tea inbox "my dilemma"        # Pour an architectural dilemma into tonight's inbox
+  tea archive                   # List all historical dialogue movements
+  tea status                    # Check pending inbox status
+  tea clear                     # Clear the pending inbox
+"""
+
+import os
+import sys
+import time
+import json
+import random
+import subprocess
+from datetime import datetime
+from pathlib import Path
+
+ROOT = Path("/Users/tamnm/code/personal/loopany/dorm-conductor")
+INBOX = ROOT / "inbox.md"
+WEB_SCRIPT = ROOT / "conductor_web.py"
+CHAT_HISTORY = ROOT / "chat_history.json"
+DIALOGUES_DIR = ROOT / "dialogues"
+PLACEHOLDER = "<!-- Leave an architectural question or scenario here. The conductor reads this\n     before composing, answers it in the next dialogue, and clears it. -->"
+
+QUIZZES = [
+    {
+        "title": "The Cathedral Reverberation Crisis",
+        "hall": "Stone Cathedral (RT60: 4.5s Tail)",
+        "scenario": "A delicate solo woodwind trades rapid 4-bar phrases with 4 trombones. In the stone cathedral with a 4.5s acoustic tail, the brass low-frequency mud obliterates the soloist's entry.",
+        "question": "What is your architectural intervention?",
+        "options": [
+            ("A", "Order the solo woodwind to push to fortissimo (fff) and play harder.", False,
+             "Flawed: Woodwinds have a physical ceiling; pushing them causes shrill timbre and breath exhaustion."),
+            ("B", "Drop trombones to pianissimo (pp), insert a 2-beat caesura (rest), and let the room clear before the soloist speaks.", True,
+             "Maestro's Choice: Never push on the ceiling; lower the dynamic floor of heavy producers and insert structural cooldown silence."),
+            ("C", "Double the tempo so phrases pass before the hall resonates.", False,
+             "Disaster: Pushes more events into an overloaded acoustic buffer.")
+        ],
+        "takeaway": "When high-volume background producers drown out latency-sensitive consumers, do not force clients to retry frantically. Throttle heavy producers and introduce backoff cooldowns."
+    },
+    {
+        "title": "The 45-Meter Offstage Brass Delay",
+        "hall": "Grand Festival Hall (Distance: 45m, ~130ms Sound Delay)",
+        "scenario": "Offstage trumpets 45m away listen to the stage strings to time their attack, arriving a full beat late to the audience. Waving frantically only makes them rush out of time.",
+        "question": "How do you coordinate two sections separated by 130ms of acoustic latency?",
+        "options": [
+            ("A", "Instruct offstage trumpets to synchronize on a visible beat (video monitor) and ignore local audio feedback.", True,
+             "Maestro's Choice: Sound is slow, light is global. Trust the visible clock and accept feeling locally 'wrong' so the chord lands right in the house."),
+            ("B", "Have the on-stage orchestra pause and wait for the remote trumpets.", False,
+             "Deadly: Stopping the main tempo introduces latency spikes and destroys the master groove."),
+            ("C", "Tell trumpets to play louder to travel faster.", False,
+             "Acoustic violation: Sound velocity is fixed by air physics, not volume.")
+        ],
+        "takeaway": "Distributed components across physical regions cannot synchronize via peer echo. Decouple via global timestamps and visible clock synchronization."
+    },
+    {
+        "title": "The Rehearsal Economy: Bar 1 vs Bar 214",
+        "hall": "Rehearsal Studio (90 Minutes Remaining)",
+        "scenario": "You have 90 minutes before premiere. There is a difficult solo violin passage at Bar 40, and a treacherous 7/8 section handoff between woodwinds and cellos at Bar 214.",
+        "question": "Where do you invest your room time?",
+        "options": [
+            ("A", "Start at Bar 1 and play sequentially.", False, "Rookie blunder: You run out of clock before the critical second half."),
+            ("B", "Drill the solo violin passage for 45 minutes.", False, "Wasted budget: Virtuosity is homework to practice in private."),
+            ("C", "Start directly at Bar 214: drill only the seam where two sections must agree.", True,
+             "Maestro's Choice: Rehearse only what cannot be practiced in isolation. Individual parts are homework; agreement is the concert.")
+        ],
+        "takeaway": "Focus architectural review exclusively on integration seams, contracts, and handoff boundaries where independent services must agree."
+    }
+]
+
+PING_MESSAGES = [
+    "Kettle is hot. The Maestro has staged a new acoustic scenario for you in Room 402.",
+    "Time to step onto the podium. Have you checked the vertical score today?",
+    "A fresh pot of tea is ready. Let's see if your dynamic headroom is holding.",
+    "The hall is quiet. Take 5 minutes to test your ears on the cathedral reverberation puzzle."
+]
+
+
+def send_mac_ping(custom_msg=None):
+    msg = custom_msg or random.choice(PING_MESSAGES)
+    # 1. Native macOS Notification with Sound
+    osa_cmd = [
+        "osascript", "-e",
+        f'display notification "{msg}" with title "🫖 Room 402 · Late-Night Conductor" sound name "Glass"'
+    ]
+    try:
+        subprocess.run(osa_cmd, check=False)
+    except Exception as e:
+        print(f"Notification error: {e}")
+
+    # 2. Pop up the browser
+    url = "http://127.0.0.1:7332"
+    try:
+        subprocess.run(["open", url], check=False)
+    except Exception:
+        import webbrowser
+        webbrowser.open(url)
+
+    print(f"🔔 \033[1;32mPinged & Popped up browser!\033[0m\n> {msg}")
+
+
+def parse_duration(s):
+    s = s.strip().lower()
+    if s.endswith("s"):
+        return int(s[:-1])
+    if s.endswith("m"):
+        return int(s[:-1]) * 60
+    if s.endswith("h"):
+        return int(s[:-1]) * 3600
+    try:
+        return int(s) * 60  # Default to minutes
+    except ValueError:
+        return 1800  # Default 30 min
+
+
+def run_ping_daemon(interval_sec, single_shot=False):
+    if single_shot:
+        print(f"⏳ Waiting {interval_sec}s before popping up Room 402 studio...")
+        time.sleep(interval_sec)
+        send_mac_ping()
+        return
+
+    print(f"🫖 Room 402 Ping Daemon running. Will pop up browser every {interval_sec // 60} minutes. Press Ctrl+C to stop.")
+    while True:
+        try:
+            time.sleep(interval_sec)
+            send_mac_ping()
+        except (KeyboardInterrupt, EOFError):
+            print("\n*Ping daemon stopped.*")
+            break
+
+
+def run_quiz():
+    quiz = random.choice(QUIZZES)
+    print("\n" + "=" * 60)
+    print(f"🎼 \033[1;33mROOM 402 PODIUM QUIZ: {quiz['title'].upper()}\033[0m")
+    print(f"📍 Venue: {quiz['hall']}")
+    print("=" * 60)
+    print(f"\n{quiz['scenario']}\n")
+    print(f"\033[1m{quiz['question']}\033[0m\n")
+
+    for opt_id, text, _, _ in quiz['options']:
+        print(f"  [\033[1;36m{opt_id}\033[0m] {text}")
+
+    print()
+    ans = input("Your choice (A/B/C) > ").strip().upper()
+    
+    selected = None
+    for opt_id, text, is_corr, feedback in quiz['options']:
+        if opt_id == ans:
+            selected = (opt_id, is_corr, feedback)
+            break
+
+    print("\n" + "-" * 60)
+    if selected:
+        if selected[1]:
+            print("🎯 \033[1;32mMAESTRO'S COMMENDATION (FLAWLESS SCORE)\033[0m")
+        else:
+            print("⚠️ \033[1;31mACOUSTIC COLLISION DETECTED\033[0m")
+        print(f"\n{selected[2]}\n")
+    else:
+        print("Invalid choice. The orchestra drifted into silence.")
+
+    print(f"\033[1;33mEnterprise Architecture Principle:\033[0m\n{quiz['takeaway']}")
+    print("-" * 60 + "\n")
+
+
+def run_chat():
+    print("\n☕ \033[1;33mLate-Night Tea Chat in Room 402\033[0m (Type 'exit' or Ctrl+C to stop)\n")
+    from conductor_web import generate_conductor_reply, load_chat_history, save_chat_history
+
+    while True:
+        try:
+            msg = input("\nYou (Architect) > ").strip()
+            if not msg or msg.lower() in ("exit", "quit"):
+                print("\n*Sets mug down.* Get some rest before rehearsal.")
+                break
+            
+            history = load_chat_history()
+            print("\n*Maestro is steeping tea and reflecting on the score...*")
+            reply = generate_conductor_reply(msg, history)
+            
+            history.append({"role": "user", "content": msg})
+            history.append({"role": "assistant", "content": reply})
+            save_chat_history(history)
+
+            print(f"\n\033[1;35mMaestro Flatmate:\033[0m\n{reply}")
+        except (KeyboardInterrupt, EOFError):
+            print("\n*Steam curls from the teapot.* Goodnight.")
+            break
+
+
+def list_dialogues():
+    print("\n📜 \033[1;33mARCHITECTURAL SCORE MOVEMENTS & DIALOGUES\033[0m\n")
+    if not DIALOGUES_DIR.exists():
+        print("No movements recorded yet.")
+        return
+    files = sorted(DIALOGUES_DIR.glob("*.md"), reverse=True)
+    for f in files:
+        title = f.stem.replace("-", " ").title()
+        print(f"  • \033[1;36m{f.stem[:10]}\033[0m  {title}")
+    print()
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print("☕ Opening Room 402 Conductor Studio in browser...")
+        subprocess.run(["python3", str(WEB_SCRIPT), "--open"])
+        return
+
+    cmd = args[0].lower()
+
+    if cmd in ("ping", "-p", "--ping"):
+        if len(args) == 1:
+            send_mac_ping()
+            return
+        
+        sub = args[1].lower()
+        if sub in ("--after", "-a") and len(args) > 2:
+            sec = parse_duration(args[2])
+            run_ping_daemon(sec, single_shot=True)
+            return
+        elif sub in ("--every", "-e") and len(args) > 2:
+            sec = parse_duration(args[2])
+            run_ping_daemon(sec, single_shot=False)
+            return
+        else:
+            send_mac_ping()
+            return
+
+    if cmd in ("quiz", "-q", "--quiz"):
+        run_quiz()
+        return
+
+    if cmd in ("chat", "-c", "--chat"):
+        run_chat()
+        return
+
+    if cmd in ("archive", "-a", "--archive", "list", "dialogues"):
+        list_dialogues()
+        return
+
+    if cmd in ("--status", "-s", "status"):
+        if INBOX.exists():
+            text = INBOX.read_text(encoding="utf-8").replace(PLACEHOLDER, "").strip()
+            if text:
+                print(f"🟢 \033[1;32mDilemma queued for tonight's tea:\033[0m\n---\n{text}\n---")
+                return
+        print("⚪ Inbox is clear. Roommate will lead with tonight's foundational score lesson.")
+        return
+
+    if cmd in ("--clear", "-c", "clear"):
+        INBOX.write_text(f"{PLACEHOLDER}\n", encoding="utf-8")
+        print("🧹 Inbox cleared.")
+        return
+
+    if cmd in ("--web", "-w", "web"):
+        subprocess.run(["python3", str(WEB_SCRIPT), "--open"])
+        return
+
+    # Treat remaining args as a poured message
+    msg = " ".join(args).strip()
+    INBOX.write_text(f"{PLACEHOLDER}\n\n{msg}\n", encoding="utf-8")
+    print(f"☕ \033[1;32mPoured into inbox!\033[0m Your roommate will address this tonight at 22:00:\n> {msg}")
+
+
+if __name__ == "__main__":
+    main()

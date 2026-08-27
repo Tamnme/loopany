@@ -12,3 +12,7 @@
 /loop-src/fixture/rustlings/target/
 /loop-src/fixture/rust-dsa/target/
 /loop-src/fixture/slow-cargo-scenario/rust-dsa/target/
+
+# Conductor loop runtime state and private output — local only.
+/loopany/dorm-conductor/dialogues/
+/loopany/dorm-conductor/chat_history.json

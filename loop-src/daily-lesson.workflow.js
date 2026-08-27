@@ -15,7 +15,8 @@ const HOST_TIMEOUT_MS = 30000;
 
 // Held back from every remainingMs() calculation below for everything that ISN'T the external
 // command being budgeted right then: node/module startup, the ~6 lesson-file reads + stat calls,
-// the rustlings state/manifest reads, and the final `await agent(...)` hand-off. None of that is
+// the rustlings state/manifest reads, the rust-dsa source walk, and the final `await agent(...)`
+// hand-off. None of that is
 // individually slow, but none of it is free either, and all of it happens AROUND the two
 // external-command budgets below, never inside them. 5000ms sits comfortably above everything
 // that work has measured at.
@@ -124,6 +125,24 @@ for (let i = history.length - 1; i >= 0; i--) {
   else break;
 }
 
+// The mirror of streakBeforePrev: the trailing run of `skipped`, newest first, over the
+// already-graded lessons. Same contract — `assigned` entries are skipped, so prev_lesson
+// (which this run is about to grade) is NOT counted and the agent adds 1 itself if it
+// grades prev `skipped`. Exactly one of these two counters is ever non-zero.
+//
+// This exists because "how many zero days in a row" is the number the brief's shrink ladder
+// now keys on, and every run was re-deriving it by eyeballing `history`. It is the signal
+// that tells a difficulty problem (shrink) apart from an absence (don't) — three runs in a
+// row shrank a lesson that had been landing for 13 straight days, which is the wrong lever
+// for someone who simply wasn't there.
+let consecutiveSkips = 0;
+for (let i = history.length - 1; i >= 0; i--) {
+  const t = history[i].type;
+  if (t === 'assigned') continue;
+  if (t === 'skipped') consecutiveSkips++;
+  else break;
+}
+
 // rustlings progress: the state file lists every exercise rustlings recorded as passing.
 // Line 1 is a "DON'T EDIT" header, the first name after it is the current exercise,
 // the rest are done. Blank lines are noise. Instant, and no 94-crate recompile.
@@ -157,6 +176,40 @@ try {
   binMap = {}; // manifest unreadable — feedback degrades to nothing, never to a failed run
 }
 
+// The next exercises in rustlings' OWN order — the one thing every run went hunting for by
+// hand. Run 7 spent five shell commands on it (`ls exercises/`, greps over `info.toml`, then
+// over Cargo.toml's names, then over its paths) and then `cat`-ed the sources on top; run 5
+// guessed instead and got it wrong — it assumed `if3 → primitive_types1` and missed `quiz1`,
+// which lives in `exercises/quizzes/` and in no section dir, so the owner could not reach the
+// "done when" the lesson stated. Cargo.toml's bin list IS the exercise order and `binMap`
+// already holds it (string-key insertion order is spec-guaranteed), so this costs one
+// `Object.keys` plus six small reads. Source text rides along so the run doesn't `cat` either.
+const NEXT_COUNT = 6;
+const CODE_CAP = 3000;
+const binOrder = Object.keys(binMap);
+const nextExercises = [];
+if (currentExercise) {
+  const at = binOrder.indexOf(currentExercise);
+  // at < 0 means the state file names an exercise the manifest doesn't — hand over nothing
+  // rather than a wrong slice, and let the agent fall back to reading the bin list itself.
+  if (at >= 0) {
+    for (const name of binOrder.slice(at, at + NEXT_COUNT)) {
+      const rel = binMap[name];
+      let code = null;
+      try {
+        code = (await fs.readFile(base + '/rustlings/' + rel, 'utf8')).slice(0, CODE_CAP);
+      } catch (e) {
+        code = null; // unreadable — name + path still tell the run what to assign
+      }
+      // owner_modified is filled in below, once `since` is known. Defaulted to false here so
+      // the key is always present — an absent key reads as "no attempt" to the agent either
+      // way, but a missing one invites it to go stat the file itself, which is the hand-work
+      // this field exists to remove.
+      nextExercises.push({ name, path: rel, code, owner_modified: false });
+    }
+  }
+}
+
 // Which exercises the owner actually worked on since the last lesson. BOTH conditions are
 // required: the done list alone cannot tell yesterday's work from last week's, and mtime
 // alone would surface a file they opened but never got passing.
@@ -180,6 +233,30 @@ if (prevName) {
     if (!since || since > st.mtimeMs) since = st.mtimeMs;
   } catch (e) {
     since = 0; // unreadable — fall through to reviewing nothing rather than everything
+  }
+}
+
+// Did the owner WRITE into an exercise rustlings has not yet recorded as done? That is a
+// different state from both "done" and "never opened", and the loop had no field for it.
+// 2026-08-22: `quiz2` was complete and correct in next_exercises[0].code — signature and the
+// `use` both fixed — yet `current_exercise` was still `quiz2`, because rustlings only ticks an
+// exercise whose watcher has actually executed it. The run had to infer "this is a finished
+// attempt, not the pristine exercise" by reading the code and guessing, and the Spec had to
+// carry a standing note telling it to. mtime settles it as a fact: owner_modified true with the
+// name absent from rustlings.done means PRESENCE one keystroke short of a pass, which the
+// absence rules must never score as a miss.
+//
+// Same cutoff, same reasoning as `reviewed_exercises` above — the previous lesson's birthtime.
+// Deliberately NOT combined with the done-list check that `selected` makes: this field is for
+// exercises that are precisely NOT done yet, so the two are complements, not variants.
+if (since > 0) {
+  for (const ex of nextExercises) {
+    try {
+      const st = await fs.stat(base + '/rustlings/' + ex.path);
+      ex.owner_modified = st.mtimeMs > since;
+    } catch (e) {
+      ex.owner_modified = false; // file gone — never claim an attempt we cannot see
+    }
   }
 }
 
@@ -329,6 +406,19 @@ if (cargoBudgetMs > 0) {
     cargoOk = true;
   } catch (e) {
     out = (e.stdout || '') + (e.stderr || '') + (e.stdout || e.stderr ? '' : String(e));
+    // A non-zero exit is NOT the same as "cargo didn't run", and under the chess contract it is
+    // the NORMAL case: every weekday the run writes a deliberately-failing `todo!()` test into
+    // the crate, so `cargo test` exits non-zero EVERY DAY by design. Keying `ok` on the exit code
+    // made the grading data read as UNKNOWN on every single run — run 11 dutifully re-ran
+    // `cargo test` by hand because of it, and the brief's "carry the test forward unchanged"
+    // rule would have frozen the chess track outright.
+    //
+    // Same distinction the clippy path already draws with `hasJson`: `ok` means "cargo produced
+    // parseable test output", not "everything passed". Per-test verdicts live in passing_tests /
+    // failing_tests. A crate that does not COMPILE emits no `test ... ok|FAILED` and no
+    // `test result:` line at all, so it still lands on ok:false — which is exactly right, because
+    // that is the case where grading really is blind.
+    cargoOk = /^test (?:\S+ \.\.\. (?:ok|FAILED)|result:)/m.test(out);
   }
 }
 
@@ -371,13 +461,117 @@ for (const name of selected) {
   }
 }
 
+// The chess crate's own source. Run 11 — the first day of the chess track — opened with
+// `ls -R src tests && cat src/lib.rs && cat Cargo.toml` to orient before writing the day's
+// failing test, and then had to rewrite lib.rs to register `mod chess;`. Now that EVERY
+// weekday assigns a chess step into this crate, that orientation is a per-run cost, and it is
+// fully deterministic — so it moves here. Only `src/` and `tests/` are walked; `target/` is
+// generated and enormous and is never touched.
+//
+// Caps exist because this crate grows: ~2.3KB of Rust today, but the goal is a full engine
+// plus eight `ds::` modules. A file over the per-file cap is clipped and flagged, and `bytes`
+// always carries the TRUE size, so a truncated file is visible as truncated rather than
+// silently short — the run can Read the tail itself on the one day it needs it.
+const RS_PER_FILE_CAP = 8000;
+const RS_TOTAL_CAP = 48000;
+
+const walkRs = async (dir, rel) => {
+  const out = [];
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch (e) {
+    return out; // directory absent (no tests/ yet) — not an error, just nothing to hand over
+  }
+  for (const ent of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    const r = rel + '/' + ent.name;
+    if (ent.isDirectory()) out.push(...(await walkRs(dir + '/' + ent.name, r)));
+    else if (ent.name.endsWith('.rs')) out.push(r);
+  }
+  return out;
+};
+
+const rsPaths = [
+  ...(await walkRs(base + '/rust-dsa/src', 'src')),
+  ...(await walkRs(base + '/rust-dsa/tests', 'tests')),
+];
+
+// Did the OWNER open the chess crate since the last lesson was issued? This is the exact
+// mirror of `reviewed_exercises` for Track A's rustlings half, and it answers the one question
+// six days of shrinking the chess step never asked: is the step too big, or is the file never
+// opened at all? On 2026-08-20 every .rs under the crate still carried an mtime of 08-18 09:01
+// — the RUN's own write — while rustlings advanced daily, so a one-line `piece_at` had been
+// re-assigned three times to a file nobody had opened. Shrinking cannot fix that; only the
+// brief's chess-half absence rule can, and it keys on this flag.
+//
+// The run's own crate edits are excluded BY CONSTRUCTION, not by filtering: `since` is the
+// PREVIOUS lesson file's birthtime, and the brief's step order writes the day's failing test
+// (step 2) BEFORE the lesson file (step 3), so a run-authored edit always lands before the
+// cutoff it will be compared against tomorrow. Keep that order — inverting it turns every
+// carried-forward day into a false "owner touched it".
+//
+// Stats every walked path, deliberately independent of the RS_TOTAL_CAP read loop below: a
+// file dropped for size still counts as touched, and this must never under-report absence.
+const rsTouched = [];
+if (since > 0) {
+  for (const rel of rsPaths) {
+    try {
+      const st = await fs.stat(base + '/rust-dsa/' + rel);
+      if (st.mtimeMs > since) rsTouched.push(rel);
+    } catch (e) {
+      continue; // file gone — skip it, never fail the run
+    }
+  }
+}
+
+// The Spec's "empty room" test, computed once. THREE live rules key on it — whether a blank
+// `### My answer` counts as the owner's decision or as an empty room, whether to re-ask the
+// crate Q1, and (with consecutive_skips) whether a zero day is absence at all — and the runs of
+// 08-24, 08-25 and 08-26 each re-derived it by hand from these same three arrays. It is a pure
+// OR over data already gathered above, so it costs nothing and stops three prose restatements
+// of one boolean from drifting apart.
+//
+// "rustlings.done advanced" is deliberately NOT a fourth signal: an exercise only enters `done`
+// by being written AND executed by the watcher, so any advance since the cutoff already shows up
+// in reviewed_exercises. Adding it would need a cursor in `prev` and would double-count.
+const presenceSignals = [];
+if (reviewedExercises.length) presenceSignals.push('reviewed_exercises');
+if (nextExercises.some((e) => e.owner_modified)) presenceSignals.push('owner_modified');
+if (rsTouched.length) presenceSignals.push('rust_dsa.owner_touched');
+const presence = { any: presenceSignals.length > 0, signals: presenceSignals };
+
+const rustDsaFiles = [];
+let rsTotal = 0;
+for (const rel of rsPaths) {
+  if (rsTotal >= RS_TOTAL_CAP) break;
+  try {
+    const code = await fs.readFile(base + '/rust-dsa/' + rel, 'utf8');
+    const kept = code.slice(0, RS_PER_FILE_CAP);
+    rsTotal += kept.length;
+    rustDsaFiles.push({ path: rel, bytes: code.length, truncated: kept.length < code.length, code: kept });
+  } catch (e) {
+    continue; // one unreadable file must not cost the rest of the crate, or the lesson
+  }
+}
+
+// Small, and it carries the `[[bin]]` section phase 8 eventually needs plus the (currently
+// empty) dependency list the 8s cargo-test budget assumes.
+let cargoToml = null;
+try {
+  cargoToml = await fs.readFile(base + '/rust-dsa/Cargo.toml', 'utf8');
+} catch (e) {
+  cargoToml = null; // unreadable — the run falls back to reading it itself
+}
+
 await agent(
   "Grading data is pre-fetched below — skip step 1's shell/read commands and go straight to judging yesterday's lesson against it, then write today's to lessons/<today>.md. " +
     'prev_lesson is the file to grade (its full text, plus track_b_answer already extracted — empty means Track B was skipped); ' +
     'history is every lesson so far with its graded type; streak_before_prev is the streak over those, so your reported streak is it +1 if you grade prev_lesson done|partial, else 0; ' +
+    'consecutive_skips is its mirror — the trailing run of `skipped`, also excluding prev_lesson, so add 1 yourself if you grade prev `skipped`. It is the trigger for the brief\'s "Absence, not difficulty" rule: at 3 or more, STOP shrinking the lesson and follow that section instead — shrinking is the wrong lever for someone who simply was not there, and it has already been pulled to the floor. ' +
+    'presence.any is the brief\'s "empty room" test, already computed — true means the owner showed up since the last lesson (presence.signals names which of reviewed_exercises / owner_modified / rust_dsa.owner_touched fired). Do NOT re-derive it. It decides three things the brief spells out: a blank `### My answer` is the owner\'s DECISION only when presence.any is true, and an EMPTY ROOM (no decision, question stays open) when it is false; the crate Q1 is re-asked only on a day with presence; and during an absence Track B holds its concept instead of rotating forward. ' +
     'gap_days > 0 means a run FAILED and the owner got no lesson those days — say so in the opening note, never count it as their skip; ' +
     'rustlings.done lists exercises rustlings recorded as passing; cargo carries rust-dsa\'s test state. ' +
-    'cargo.ok false means the run was skipped or failed — treat it as UNKNOWN, never as "no tests exist", and run `cargo test` yourself. ' +
+    'cargo.ok true means cargo RAN and its per-test verdicts are trustworthy — it does NOT mean everything passed, and a failing test is the normal daily state under the chess contract, so grade from passing_tests/failing_tests and do not re-run `cargo test` yourself. cargo.ok false means the call was skipped or the crate did not compile: grading is genuinely blind, so treat it as UNKNOWN, check compile_errors, and run `cargo test` yourself. ' +
     'Today\'s lesson does not exist yet — this is not a duplicate wake, that case never reaches you. ' +
     'is_review_day true means it is SUNDAY: follow the brief\'s "Sunday · Review day" section instead of the ' +
     'curriculum — no new concept on either track, a 5-question test as Track B and a small project as Track A, ' +
@@ -386,6 +580,9 @@ await agent(
     'due_review is the spaced-repetition ladder already computed — every past lesson now sitting at its ~1w, ~4w or ~12w ' +
     'rung, whether or not it was ever answered wrong. Draw the older questions and the small project from it; the task ' +
     'file\'s Review queue is only the wrong-answer exceptions layered on top, and Retired items are dropped from the draw. ' +
+    'rustlings.next_exercises is the ordered slice of exercises starting AT current_exercise, straight from Cargo.toml\'s bin list (the authoritative exercise order, quizzes included), each with its path and source text. Size today\'s Track A step off it and quote its "done when" from it — never go grep the manifest or cat the sources, and never infer the order from section directory names, which is what mis-assigned lesson 5. Empty means the state file and manifest disagree: then, and only then, check the bin list yourself. ' +
+    "rust_dsa is the chess crate itself — every .rs under src/ and tests/ with its path and full text, plus Cargo.toml. Write today's failing test straight into it and register any new module in the src/lib.rs text given here; never `ls -R`, `cat` or re-Read the crate to orient first. A file with truncated:true was clipped at 8KB (bytes is its real size) — Read only that one if you need its tail. Empty means the crate is unreadable: then, and only then, look yourself. " +
+    "rust_dsa.owner_touched says whether the owner opened the crate at all since the last lesson (touched_paths names the files); your own edits are excluded by construction, so false with a red chess test means the step was never ATTEMPTED, not that it was too big. It is the trigger for the brief's \"The chess half is untouched, not too big\" rule — do not shrink or re-serve a step nobody opened. Write the crate edit BEFORE the lesson file, per the brief's step order, or you poison tomorrow's flag. " +
     'reviewed_exercises is the Rust the owner actually wrote since the last lesson: their code, rustlings\' official solution, and scoped clippy findings with real lint names. Open Track A with the brief\'s "Yesterday\'s code" block built from it — deep-review ONE exercise and give the rest a line each. clippy.ok false means UNKNOWN, never clean. When there is nothing worth saying, omit the block entirely rather than writing praise. ' +
     'Only re-read files or re-run `rustlings check-all` / `cargo test` yourself if this data looks wrong or is null.',
   {
@@ -397,6 +594,8 @@ await agent(
     prev_lesson: prevLesson,
     history,
     streak_before_prev: streakBeforePrev,
+    consecutive_skips: consecutiveSkips,
+    presence,
     gap_days: gapDays,
     selected,
     rustlings: {
@@ -404,8 +603,15 @@ await agent(
       done: doneExercises,
       done_count: doneExercises.length,
       total: 94,
+      next_exercises: nextExercises,
     },
     reviewed_exercises: reviewedExercises,
+    rust_dsa: {
+      files: rustDsaFiles,
+      owner_touched: rsTouched.length > 0,
+      touched_paths: rsTouched,
+      cargo_toml: cargoToml,
+    },
     cargo: {
       ok: cargoOk,
       summary,

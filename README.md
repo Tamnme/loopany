@@ -4,8 +4,11 @@ The local source for a [Loopany](https://loopany.ai) scheduled loop that teaches
 data structures, 15 minutes a day, and grades whether I actually did yesterday's work.
 
 The loop runs on my machine via the loopany daemon, fires at **09:00 Asia/Saigon**, and finishes
-itself when `rust-dsa` implements Vec, Stack, Queue, LinkedList, BinaryHeap, BST, HashMap and
-Graph — each unit-tested and documented.
+itself when `rust-dsa` plays legal chess — perft-verified move generation, alpha-beta search with
+a transposition table, and a terminal binary to play a full game against — built on hand-written
+`ds::` structures rather than std's. (Until 2026-08-09 the finish line was an abstract
+8-structure library; the brief records why chess replaced it. Five of the eight structures are
+still earned along the way, the rest on Sundays.)
 
 ## How a run works
 
@@ -13,8 +16,10 @@ Each morning, two stages:
 
 1. **The workflow** (`loop-src/daily-lesson.workflow.js`) — deterministic JS, no LLM. It gathers
    everything the lesson needs: yesterday's lesson and the answer I typed into it, the full
-   lesson history, the spaced-repetition ladder, compiler-backed rustlings progress, `cargo test`
-   state, and code feedback on the exercises I finished. Then it calls `agent(prompt, data)`.
+   lesson history, the spaced-repetition ladder, compiler-backed rustlings progress, the next
+   exercises in rustlings' own order with their source text, the chess crate's own `src/` and
+   `tests/` sources, `cargo test` state, and code feedback on the exercises I finished. Then it
+   calls `agent(prompt, data)`.
 2. **The agent** — a coding agent that grades yesterday per track, picks today's two steps, writes
    the lesson, and opens it in the browser. Its instructions live in
    `loopany/daily-lesson/README.md`.
@@ -41,6 +46,9 @@ are gitignored here (rustlings alone has a 110 MB `target/`).
 ```bash
 cd loop-src && node --test          # 33 tests, all offline except cargo/clippy
 ```
+
+**As of 2026-08-12, 3 of the 33 fail on a clock, not a regression** — see the fixture bullet
+below. Compare against that baseline before assuming you broke something.
 
 Deploy only through the dry-run gate — the loop fires unattended, and a broken workflow costs a
 real lesson day:
@@ -73,6 +81,12 @@ These are not style preferences. Each one has cost a lesson day or a silent bug.
 - **The fixture must mirror production's shape, not a convenient one.** Most bugs found while
   building the feedback feature were a green test suite over a real break, and most of those were
   the fixture diverging from reality.
+- **The fixture's mtimes are hardcoded absolute dates, and they expire (2026-08-12).** The
+  selection tests stamp exercises at `2026-08-05`…`2026-08-13` but recreate the cutoff lesson to
+  get a *live* birthtime, so once the wall clock passed those dates the qualifying pool emptied
+  and 3 tests went red — `selection caps at 5…`, `one unreadable exercise…`, and the `denied1`
+  clippy-level test. Nothing in the workflow broke. Restamp relative to `Date.now()` when you next
+  touch that harness; until then, treat those 3 as the known baseline.
 
 ## Notes
 

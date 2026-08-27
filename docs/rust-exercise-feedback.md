@@ -4,6 +4,13 @@
 **Loop:** `loop-ms79033a-b8c219c7` — "Rust + DSA — Daily Lesson"
 **Status:** implemented and deployed 2026-08-04. First live run: 2026-08-05 09:00 Asia/Saigon.
 
+> **Superseded in one place (2026-08-09).** The feedback feature itself still works exactly as
+> described. But *What deliberately does not change → Grading* is no longer true: since the chess
+> pivot, `cargo` grades a named test **every weekday**, not just Sundays, and `cargo.ok` means
+> "cargo produced parseable test output" rather than "the exit code was zero" (a failing test is
+> the normal daily state). Read the rest of this doc as the 2026-08-04 record it is; the live
+> grading contract lives in `loopany/daily-lesson/README.md`.
+
 ## Context
 
 The loop currently grades Track A pass/fail: `rustlings.done` says an exercise compiles and

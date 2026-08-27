@@ -1,10 +1,15 @@
-# loopany — Rust + DSA daily lesson
+# loopany — local source for my scheduled loops
 
-The local source for a [Loopany](https://loopany.ai) scheduled loop that teaches me Rust and
-data structures, 15 minutes a day, and grades whether I actually did yesterday's work.
+Two [Loopany](https://loopany.ai) loops, both running on my machine via the loopany daemon:
 
-The loop runs on my machine via the loopany daemon, fires at **09:00 Asia/Saigon**, and finishes
-itself when `rust-dsa` plays legal chess — perft-verified move generation, alpha-beta search with
+| Loop | Fires | What |
+|---|---|---|
+| **Rust + DSA — Daily Lesson** | 09:00 Asia/Saigon | Teaches me Rust and data structures, 15 minutes a day, and grades whether I actually did yesterday's work. Most of this repo. |
+| **Late-Night Conductor** | 22:00 Asia/Saigon | An orchestral-conductor flatmate who translates enterprise-architecture dilemmas into orchestration and acoustics. Brief + web app only — see `loopany/dorm-conductor/README.md`. |
+
+The rest of this README is about the daily lesson; the conductor's brief is self-contained.
+
+The lesson loop finishes itself when `rust-dsa` plays legal chess — perft-verified move generation, alpha-beta search with
 a transposition table, and a terminal binary to play a full game against — built on hand-written
 `ds::` structures rather than std's. (Until 2026-08-09 the finish line was an abstract
 8-structure library; the brief records why chess replaced it. Five of the eight structures are
@@ -37,9 +42,13 @@ and cheap, so stage 2 never burns turns on `ls` and `date`.
 | `loopany/daily-lesson/README.md` | **The loop's brief and memory** — not documentation. The agent reads it every morning and appends to it. Synced to the loopany server. |
 | `loopany/daily-lesson/lessons/` | One file per day, both tracks, with my answers written back in. |
 | `docs/rust-exercise-feedback.md` | Design notes for the code-feedback feature, including facts that cost real debugging to learn. |
+| `loopany/dorm-conductor/` | The conductor loop: its brief, `conductor_web.py` (the tea chatbox / acoustics simulator, stdlib-only, port 7332), and the `tea` CLI. |
 
 **Not in this repo:** `rustlings/` and `rust-dsa/` sit beside it, carry their own git history, and
-are gitignored here (rustlings alone has a 110 MB `target/`).
+are gitignored here (rustlings alone has a 110 MB `target/`). The conductor's
+`dialogues/` and `chat_history.json` are gitignored too — private output that churns every run.
+The lesson loop's `lessons/` are tracked; both loops' output directories are the loops' own, never
+hand-edited source.
 
 ## Working on the workflow
 

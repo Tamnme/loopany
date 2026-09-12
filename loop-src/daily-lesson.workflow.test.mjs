@@ -726,4 +726,100 @@ test('capWarnings keeps every error even when errors alone exceed the cap', asyn
     'when errors alone exceed the cap, no warning-level entry should take a slot that belongs to an error');
 });
 
+// ─── The no-agent hold gate ───────────────────────────────────────────────────
+//
+// The gate shipped 2026-09-07 and NEVER FIRED: it was interlocked on `prev`, the host cursor,
+// which the escalation path never writes (`return {}`), so it could only fire the day after it
+// had already fired. Four eligible days woke a ~$1.50 agent to copy a file. The interlock now
+// reads a `metrics:` line out of yesterday's own front matter, and these two tests are the
+// evidence that it fires at all — the check the original gate never had.
+//
+// Both build their own throwaway lessons tree rather than using FIXTURE: the gate is keyed on
+// TODAY's real date, and the fixture's 2026-08 lessons can never satisfy `gap_days === 0`.
+async function runHoldScenario({ withMetrics }) {
+  const tmpBase = path.join(here, `.wf.hold.${Date.now()}.${Math.random().toString(36).slice(2)}`);
+  const lessons = path.join(tmpBase, 'loopany/daily-lesson/lessons');
+  await fs.mkdir(lessons, { recursive: true });
+
+  // Same zone the workflow does its date math in, so "yesterday" lines up with its `today`.
+  const tz = { timeZone: 'Asia/Ho_Chi_Minh' };
+  const at = (back) =>
+    new Date(Date.now() - back * 86400000).toLocaleDateString('en-CA', tz);
+
+  // Three graded `skipped` days put consecutive_skips at the gate's threshold of 3.
+  for (const back of [4, 3, 2]) {
+    await fs.writeFile(
+      path.join(lessons, at(back) + '.md'),
+      `---\ntype: skipped\ntitle: "Lesson x"\ndate: ${at(back)}\n---\n\n# Lesson x\n\n---\n\nbody\n`,
+    );
+  }
+  // Yesterday: still `assigned`, answer box empty — nothing to grade but a skip. The third bare
+  // `---` is what the carry-forward reads as the start of the immutable body.
+  await fs.writeFile(
+    path.join(lessons, at(1) + '.md'),
+    ['---', 'type: assigned', 'title: "Lesson 37 · Rust: `?` · DSA: Zobrist"', `date: ${at(1)}`,
+      ...(withMetrics ? ['metrics: day=37 chess_phase=1 dsa_topics=15 structs_done=1'] : []),
+      '---', '', '# Lesson 37', '', 'opening note', '', '---', '', '## Track A', '',
+      '## My answer', '', '## Worked answer', '', 'x', ''].join('\n'),
+  );
+
+  let body = await fs.readFile(SRC, 'utf8');
+  body = body.replace("const base = '/Users/tamnm/code/personal';", `const base = '${tmpBase}';`);
+  // Same source-surgery technique as the `base` and HOST_TIMEOUT_MS overrides above. Sunday is
+  // real work and falls through to the agent by design — pinning this false keeps the test from
+  // failing one day in seven for a reason that has nothing to do with the interlock.
+  body = body.replace("const isReviewDay = weekday === 'Sunday';", 'const isReviewDay = false;');
+  // The hold path spawns lesson-web.py --open, which would pop a browser and leave a server
+  // running. Point it at nothing: the spawn fails into its own catch, which is the exact
+  // "delivery failed, the file is written anyway" path the workflow already handles.
+  body = body.replace("'/Users/tamnm/.claude/tools/lesson-web.py'", "'/nonexistent/lesson-web.py'");
+
+  const tmp = path.join(here, `.wf.hold.harness.${Date.now()}.${Math.random().toString(36).slice(2)}.mjs`);
+  await fs.writeFile(tmp, `export default async function(){\n${body}\n}`);
+  let called = false;
+  globalThis.agent = async () => { called = true; };
+  try {
+    const mod = await import(tmp + '?t=' + process.hrtime.bigint());
+    const result = await mod.default();
+    // Read the products BEFORE the finally below deletes the tree.
+    const readOrNull = (d) => fs.readFile(path.join(lessons, d + '.md'), 'utf8').catch(() => null);
+    return { result, called, written: await readOrNull(at(0)), graded: await readOrNull(at(1)) };
+  } finally {
+    await fs.rm(tmp, { force: true });
+    await fs.rm(tmpBase, { recursive: true, force: true });
+  }
+}
+
+test('an eligible absence weekday is held by the workflow itself — no agent, metrics carried', async () => {
+  const { result, called, written, graded } = await runHoldScenario({ withMetrics: true });
+
+  assert.equal(called, false, 'the hold path must not wake the agent');
+  assert.ok(result && result.state, 'a hold day must return state, not a silent tick');
+  assert.equal(result.state.day, 38, 'day must advance from yesterday\'s metrics line');
+  assert.equal(result.state.chess_phase, 1, 'cumulative metrics must carry, never regress');
+  assert.equal(result.state.dsa_topics, 15);
+  assert.equal(result.state.structs_done, 1);
+  assert.equal(result.state.streak, 0);
+
+  assert.ok(written, 'a hold day must write today\'s lesson file');
+  assert.match(written, /^type: assigned$/m, 'the held lesson is issued, not graded');
+  assert.match(
+    written,
+    /^metrics: day=38 chess_phase=1 dsa_topics=15 structs_done=1$/m,
+    'the held file must carry its own metrics line, or a SECOND consecutive hold day declines',
+  );
+  assert.match(written, /## Track A/, 'the previous weekday body must be carried forward verbatim');
+
+  assert.match(graded, /^type: skipped$/m, 'yesterday must be graded skipped by the hold path');
+});
+
+test('a missing metrics line declines the hold and falls back to the agent', async () => {
+  const { result, called, written } = await runHoldScenario({ withMetrics: false });
+
+  assert.equal(called, true, 'without the interlock value the agent must run — never a bad hold');
+  assert.deepEqual(result, {}, 'the escalation path returns no state');
+  assert.equal(written, null,
+    'the workflow must not write a lesson on a declined hold — that is the agent\'s job');
+});
+
 export { runWorkflow };

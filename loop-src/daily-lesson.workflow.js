@@ -161,6 +161,29 @@ const titleOf = (text) => ((/^title:\s*(.+)$/m.exec(text) || [])[1] || '').trim(
 const answerOf = (text) =>
   ((/^#{2,3} My answer\s*\n([\s\S]*?)(?=^#{1,3} )/m.exec(text) || [])[1] || '').trim();
 
+// The lesson file's `metrics: k=v k=v` front-matter line — the loop's own store for the four
+// CUMULATIVE numbers (`day`, `chess_phase`, `dsa_topics`, `structs_done`) that no run can derive
+// from disk. It exists because the obvious store, the host cursor, does NOT work here: `prev` is
+// the workflow's OWN returned `state` (host dist/workflow.js:11, runner.js:265 `cursor =
+// wf.result.state`), and the escalation path below ends `return {}`, so every agent day persists
+// an UNDEFINED cursor. The hold gate keyed on `prev` was therefore chicken-and-egg by
+// construction — it could only fire the day after a hold day had already fired, so it never fired
+// at all (four eligible days, 2026-09-08 → 09-11, all woke the agent at ~$1.50 apiece).
+// Returning a cursor from the escalation path would fix `prev`, but the cursor is also what the
+// server reads as the run's `state`, so it risks clobbering the metrics the agent reports on a day
+// the owner actually shows up and `chess_phase` moves — the one day being wrong matters most.
+// The lesson file is the medium both the agent and this workflow already read and write, so the
+// numbers live there instead: the agent writes the line every day (Spec, *Front-matter
+// convention*), a hold day below carries it forward, and a missing/garbled line simply declines
+// the hold and wakes the agent. Null = no line = decline.
+const metricsOf = (text) => {
+  const line = (/^metrics:\s*(.+)$/m.exec(text) || [])[1];
+  if (!line) return null;
+  const out = {};
+  for (const m of line.matchAll(/([a-z_]+)=(-?\d+(?:\.\d+)?)/g)) out[m[1]] = Number(m[2]);
+  return out;
+};
+
 // Duplicate same-day wake: today's lesson is already issued and still `assigned`,
 // so there is nothing to grade and nothing to write. Silent tick, no agent.
 if (files.includes(today + '.md')) {
@@ -212,6 +235,7 @@ if (prevName) {
     date: prevName.replace('.md', ''),
     type: typeOf(text),
     track_b_answer: answerOf(text), // empty string = owner never filled it in = B skipped
+    metrics: metricsOf(text), // null = the line is missing; the agent must write one today
     text,
   };
 }
@@ -397,6 +421,198 @@ if (since > 0) {
   }
   stamped.sort((a, b) => b.mtime - a.mtime);
   selected = stamped.slice(0, REVIEW_CAP).map((s) => s.name);
+}
+
+const walkRs = async (dir, rel) => {
+  const out = [];
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch (e) {
+    return out; // directory absent (no tests/ yet) — not an error, just nothing to hand over
+  }
+  for (const ent of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    const r = rel + '/' + ent.name;
+    if (ent.isDirectory()) out.push(...(await walkRs(dir + '/' + ent.name, r)));
+    else if (ent.name.endsWith('.rs')) out.push(r);
+  }
+  return out;
+};
+
+const rsPaths = [
+  ...(await walkRs(base + '/rust-dsa/src', 'src')),
+  ...(await walkRs(base + '/rust-dsa/tests', 'tests')),
+];
+
+// Did the OWNER open the chess crate since the last lesson was issued? This is the exact
+// mirror of `reviewed_exercises` for Track A's rustlings half, and it answers the one question
+// six days of shrinking the chess step never asked: is the step too big, or is the file never
+// opened at all? On 2026-08-20 every .rs under the crate still carried an mtime of 08-18 09:01
+// — the RUN's own write — while rustlings advanced daily, so a one-line `piece_at` had been
+// re-assigned three times to a file nobody had opened. Shrinking cannot fix that; only the
+// brief's chess-half absence rule can, and it keys on this flag.
+//
+// The run's own crate edits are excluded BY CONSTRUCTION, not by filtering: `since` is the
+// PREVIOUS lesson file's birthtime, and the brief's step order writes the day's failing test
+// (step 2) BEFORE the lesson file (step 3), so a run-authored edit always lands before the
+// cutoff it will be compared against tomorrow. Keep that order — inverting it turns every
+// carried-forward day into a false "owner touched it".
+//
+// Stats every walked path, deliberately independent of the RS_TOTAL_CAP read loop below: a
+// file dropped for size still counts as touched, and this must never under-report absence.
+const rsTouched = [];
+if (since > 0) {
+  for (const rel of rsPaths) {
+    try {
+      const st = await fs.stat(base + '/rust-dsa/' + rel);
+      if (st.mtimeMs > since) rsTouched.push(rel);
+    } catch (e) {
+      continue; // file gone — skip it, never fail the run
+    }
+  }
+}
+
+// The Spec's "empty room" test, computed once. THREE live rules key on it — whether a blank
+// `### My answer` counts as the owner's decision or as an empty room, whether to re-ask the
+// crate Q1, and (with consecutive_skips) whether a zero day is absence at all — and the runs of
+// 08-24, 08-25 and 08-26 each re-derived it by hand from these same three arrays. It is a pure
+// OR over data already gathered above, so it costs nothing and stops three prose restatements
+// of one boolean from drifting apart.
+//
+// "rustlings.done advanced" is deliberately NOT a fourth signal: an exercise only enters `done`
+// by being written AND executed by the watcher, so any advance since the cutoff already shows up
+// in reviewed_exercises. Adding it would need a cursor in `prev` and would double-count.
+const presenceSignals = [];
+if (selected.length) presenceSignals.push('reviewed_exercises');
+if (nextExercises.some((e) => e.owner_modified)) presenceSignals.push('owner_modified');
+if (rsTouched.length) presenceSignals.push('rust_dsa.owner_touched');
+const presence = { any: presenceSignals.length > 0, signals: presenceSignals };
+
+// ─── Hold day: a confirmed absence re-serves the last weekday lesson, no agent ───
+//
+// Runs 30–36 (2026-08-29 → 09-07) each wrote a lesson whose body was BYTE-IDENTICAL to the day
+// before — `diff lessons/2026-09-05.md lessons/2026-09-07.md` changes only the front matter and
+// the opening note. That is not a defect: the Spec MANDATES it ("hold the step size steady",
+// "don't invent variation to feel productive"). But it cost ~$1.40 of agent per copy, and
+// copying a file is not judgment. So on a day where every signal says nobody was here, the copy
+// happens here and the agent is never woken.
+//
+// The gate is deliberately narrow — it fires only when ALL of:
+//   · not Friday — review day is real work (a standalone ds:: structure + a five-question test)
+//   · presence.any false — no rustlings keystroke, no crate touch, nothing
+//   · consecutive_skips >= 3 — the Spec's own "Absence, not difficulty" threshold
+//   · gap_days 0 — a failed run has to be explained in the opening note, which needs the agent
+//   · yesterday still `assigned` with an empty answer box — nothing to grade but a skip
+//   · yesterday's front matter carries a parseable `metrics:` line (see below)
+// Anything else — a return, a Friday, an outage, a partly-filled box — falls through to the
+// agent unchanged. Friday therefore guarantees at least one fully-agent run per week, and that
+// is where the brief's Timeline and Position get their range entry for the held stretch.
+//
+// The `metrics:` check is the safety interlock, not a formality. `chess_phase`, `dsa_topics` and
+// `structs_done` are cumulative and NOT derivable from the filesystem, so without them this path
+// would have to report a regression the Spec explicitly forbids. It declines and lets the agent
+// run — which is also how the very first hold day after a `metrics:`-less lesson behaves, and how
+// the loop self-heals if a run ever forgets the line: one agent day, which rewrites it.
+// Do NOT "fix" this back to reading `prev` — see metricsOf above for why that cannot work.
+const prevMetrics = prevLesson ? prevLesson.metrics : null;
+const holdEligible =
+  !isReviewDay &&
+  !presence.any &&
+  consecutiveSkips >= 3 &&
+  gapDays === 0 &&
+  prevLesson &&
+  prevLesson.type === 'assigned' &&
+  prevLesson.track_b_answer === '' &&
+  prevMetrics &&
+  ['day', 'chess_phase', 'dsa_topics', 'structs_done'].every((k) => Number.isFinite(prevMetrics[k]));
+
+if (holdEligible) {
+  // Carry forward the last WEEKDAY lesson, which is not always yesterday: a Friday review file
+  // teaches a standalone ds:: structure and a five-question test and must never become the next day's
+  // lesson. Grading still applies to prev_lesson, whichever kind it was.
+  const weekdayHistory = history.filter((h) => h.date < today && !/^"?Review week/.test(h.title || ''));
+  const srcEntry = weekdayHistory[weekdayHistory.length - 1] || null;
+  let held = null;
+  if (srcEntry) {
+    const srcText = await fs.readFile(lessonsDir + '/' + srcEntry.date + '.md', 'utf8');
+    const srcLines = srcText.split('\n');
+    // A lesson file is: `---` front matter `---` / `# Lesson N` + opening note / `---` / body.
+    // The THIRD bare `---` opens the immutable body; everything above it is rewritten below.
+    let seen = 0;
+    let bodyAt = -1;
+    for (let i = 0; i < srcLines.length; i++) {
+      if (srcLines[i] === '---' && ++seen === 3) { bodyAt = i; break; }
+    }
+    if (bodyAt > 0) held = { srcLines, bodyAt, title: (srcEntry.title || '').replace(/^"|"$/g, '') };
+  }
+  // An unexpected file shape is a reason to wake the agent, never to write a broken lesson.
+  if (held) {
+    const day = prevMetrics.day + 1;
+    const title = held.title.replace(/Lesson \d+/, 'Lesson ' + day);
+    const text = [
+      '---',
+      'type: assigned',
+      'title: ' + JSON.stringify(title),
+      'date: ' + today,
+      // Carried forward so a SECOND consecutive hold day still has its interlock — without this
+      // line the gate would fire exactly once per absence stretch and then decline forever.
+      // Nothing moved (that is what presence.any false means), so carrying is also correct.
+      'metrics: day=' + day +
+        ' chess_phase=' + prevMetrics.chess_phase +
+        ' dsa_topics=' + prevMetrics.dsa_topics +
+        ' structs_done=' + prevMetrics.structs_done,
+      '---',
+      '',
+      '# Lesson ' + day,
+      '',
+      '*Track A ~8 min · Track B ~7 min.*',
+      '',
+      '> Nothing has moved since the last lesson — no exercise run, no crate opened, the answer',
+      '> box still empty. **Nothing is owed and nothing has stacked up**: today is the normal',
+      '> size, and both tracks are held exactly where you left them. Pick it up whenever.',
+      '',
+      ...held.srcLines.slice(held.bodyAt),
+    ].join('\n');
+
+    // Grade yesterday first. No presence means neither track landed, which is `skipped` under
+    // the Spec's own two grading rules — the same verdict the last eight agent runs reached.
+    await fs.writeFile(
+      lessonsDir + '/' + prevName,
+      prevLesson.text.replace(/^type:\s*assigned[ \t]*$/m, 'type: skipped'),
+      'utf8',
+    );
+    await fs.writeFile(lessonsDir + '/' + today + '.md', text, 'utf8');
+
+    // Step 5 of the brief — a lesson nobody sees is a skipped day. Detached and unref'd because
+    // lesson-web.py serves until killed while this subprocess is about to exit.
+    //
+    // Both paths are absolute on purpose: the workflow subprocess runs with an ALLOWLISTED env,
+    // so neither $HOME nor a full $PATH can be assumed (the LaunchAgent plist sets PATH only).
+    // lesson-web.py is stdlib-only, so the system interpreter is enough.
+    try {
+      const { spawn } = await import('node:child_process');
+      spawn('/usr/bin/python3', ['/Users/tamnm/.claude/tools/lesson-web.py', '--open'], {
+        detached: true,
+        stdio: 'ignore',
+      }).unref();
+    } catch (e) {
+      // Delivery failed — the file is written regardless and tomorrow's run still sees it.
+    }
+
+    return {
+      message: title + ' — held, yesterday A ✗ B ✗',
+      state: {
+        day,
+        words: text.split(/\s+/).filter(Boolean).length,
+        streak: 0,
+        crate_touched: 0,
+        rustlings_done: doneExercises.length,
+        chess_phase: prevMetrics.chess_phase,
+        dsa_topics: prevMetrics.dsa_topics,
+        structs_done: prevMetrics.structs_done,
+      },
+    };
+  }
 }
 
 // Scoped clippy: every exercise is its own bin target, so this lints one 5-line file, not
@@ -596,70 +812,6 @@ for (const name of selected) {
 const RS_PER_FILE_CAP = 8000;
 const RS_TOTAL_CAP = 48000;
 
-const walkRs = async (dir, rel) => {
-  const out = [];
-  let entries;
-  try {
-    entries = await fs.readdir(dir, { withFileTypes: true });
-  } catch (e) {
-    return out; // directory absent (no tests/ yet) — not an error, just nothing to hand over
-  }
-  for (const ent of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    const r = rel + '/' + ent.name;
-    if (ent.isDirectory()) out.push(...(await walkRs(dir + '/' + ent.name, r)));
-    else if (ent.name.endsWith('.rs')) out.push(r);
-  }
-  return out;
-};
-
-const rsPaths = [
-  ...(await walkRs(base + '/rust-dsa/src', 'src')),
-  ...(await walkRs(base + '/rust-dsa/tests', 'tests')),
-];
-
-// Did the OWNER open the chess crate since the last lesson was issued? This is the exact
-// mirror of `reviewed_exercises` for Track A's rustlings half, and it answers the one question
-// six days of shrinking the chess step never asked: is the step too big, or is the file never
-// opened at all? On 2026-08-20 every .rs under the crate still carried an mtime of 08-18 09:01
-// — the RUN's own write — while rustlings advanced daily, so a one-line `piece_at` had been
-// re-assigned three times to a file nobody had opened. Shrinking cannot fix that; only the
-// brief's chess-half absence rule can, and it keys on this flag.
-//
-// The run's own crate edits are excluded BY CONSTRUCTION, not by filtering: `since` is the
-// PREVIOUS lesson file's birthtime, and the brief's step order writes the day's failing test
-// (step 2) BEFORE the lesson file (step 3), so a run-authored edit always lands before the
-// cutoff it will be compared against tomorrow. Keep that order — inverting it turns every
-// carried-forward day into a false "owner touched it".
-//
-// Stats every walked path, deliberately independent of the RS_TOTAL_CAP read loop below: a
-// file dropped for size still counts as touched, and this must never under-report absence.
-const rsTouched = [];
-if (since > 0) {
-  for (const rel of rsPaths) {
-    try {
-      const st = await fs.stat(base + '/rust-dsa/' + rel);
-      if (st.mtimeMs > since) rsTouched.push(rel);
-    } catch (e) {
-      continue; // file gone — skip it, never fail the run
-    }
-  }
-}
-
-// The Spec's "empty room" test, computed once. THREE live rules key on it — whether a blank
-// `### My answer` counts as the owner's decision or as an empty room, whether to re-ask the
-// crate Q1, and (with consecutive_skips) whether a zero day is absence at all — and the runs of
-// 08-24, 08-25 and 08-26 each re-derived it by hand from these same three arrays. It is a pure
-// OR over data already gathered above, so it costs nothing and stops three prose restatements
-// of one boolean from drifting apart.
-//
-// "rustlings.done advanced" is deliberately NOT a fourth signal: an exercise only enters `done`
-// by being written AND executed by the watcher, so any advance since the cutoff already shows up
-// in reviewed_exercises. Adding it would need a cursor in `prev` and would double-count.
-const presenceSignals = [];
-if (reviewedExercises.length) presenceSignals.push('reviewed_exercises');
-if (nextExercises.some((e) => e.owner_modified)) presenceSignals.push('owner_modified');
-if (rsTouched.length) presenceSignals.push('rust_dsa.owner_touched');
-const presence = { any: presenceSignals.length > 0, signals: presenceSignals };
 
 const rustDsaFiles = [];
 let rsTotal = 0;
@@ -686,6 +838,7 @@ try {
 
 await agent(
   "Grading data is pre-fetched below — skip step 1's shell/read commands and go straight to judging yesterday's lesson against it, then write today's to lessons/<today>.md. " +
+    "MANDATORY front matter: today's file must carry a `metrics:` line — `metrics: day=<n> chess_phase=<n> dsa_topics=<n> structs_done=<n>`, the same four numbers you `loopany report --state`. It is the ONLY store for those cumulative values (the host cursor cannot hold them; see metricsOf in the workflow), so a day without the line is a day the no-agent hold gate silently declines and every absent day costs a full agent run again. prev_lesson.metrics is yesterday's, already parsed — carry each value forward and add today's increment. " +
     'prev_lesson is the file to grade (its full text, plus track_b_answer already extracted — empty means Track B was skipped); ' +
     'history is every lesson so far with its graded type; streak_before_prev is the streak over those, so your reported streak is it +1 if you grade prev_lesson done|partial, else 0; ' +
     'consecutive_skips is its mirror — the trailing run of `skipped`, also excluding prev_lesson, so add 1 yourself if you grade prev `skipped`. It is the trigger for the brief\'s "Absence, not difficulty" rule: at 3 or more, STOP shrinking the lesson and follow that section instead — shrinking is the wrong lever for someone who simply was not there, and it has already been pulled to the floor. ' +

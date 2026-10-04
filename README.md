@@ -84,7 +84,8 @@ These are not style preferences. Each one has cost a lesson day or a silent bug.
   pass zero.
 - **Absolute paths only.** Runs start in an unrelated empty directory; nothing may depend on `cwd`.
 - **Never write inside `loopany/`.** It is synced content — no `cargo`, no build output, no
-  checkouts.
+  checkouts. The briefs (`loopany/*/README.md`) are the exception: they are the loops' contracts
+  and are edited here like source.
 - **Never touch mtimes under `rustlings/exercises/`.** They decide which exercises get reviewed;
   touching one makes stale work look new.
 - **The fixture must mirror production's shape, not a convenient one.** Most bugs found while

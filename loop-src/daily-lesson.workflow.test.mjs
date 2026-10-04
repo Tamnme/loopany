@@ -736,7 +736,7 @@ test('capWarnings keeps every error even when errors alone exceed the cap', asyn
 //
 // Both build their own throwaway lessons tree rather than using FIXTURE: the gate is keyed on
 // TODAY's real date, and the fixture's 2026-08 lessons can never satisfy `gap_days === 0`.
-async function runHoldScenario({ withMetrics }) {
+async function runHoldScenario({ withMetrics, withAttempts = false }) {
   const tmpBase = path.join(here, `.wf.hold.${Date.now()}.${Math.random().toString(36).slice(2)}`);
   const lessons = path.join(tmpBase, 'loopany/daily-lesson/lessons');
   await fs.mkdir(lessons, { recursive: true });
@@ -759,16 +759,19 @@ async function runHoldScenario({ withMetrics }) {
     path.join(lessons, at(1) + '.md'),
     ['---', 'type: assigned', 'title: "Lesson 37 · Rust: `?` · DSA: Zobrist"', `date: ${at(1)}`,
       ...(withMetrics ? ['metrics: day=37 chess_phase=1 dsa_topics=15 structs_done=1'] : []),
+      ...(withAttempts ? ['attempts:', '  - id=b1.alpha-beta result=correct help=none kind=application'] : []),
       '---', '', '# Lesson 37', '', 'opening note', '', '---', '', '## Track A', '',
       '## My answer', '', '## Worked answer', '', 'x', ''].join('\n'),
   );
 
   let body = await fs.readFile(SRC, 'utf8');
   body = body.replace("const base = '/Users/tamnm/code/personal';", `const base = '${tmpBase}';`);
-  // Same source-surgery technique as the `base` and HOST_TIMEOUT_MS overrides above. Sunday is
+  // Same source-surgery technique as the `base` and HOST_TIMEOUT_MS overrides above. Friday is
   // real work and falls through to the agent by design — pinning this false keeps the test from
   // failing one day in seven for a reason that has nothing to do with the interlock.
-  body = body.replace("const isReviewDay = weekday === 'Sunday';", 'const isReviewDay = false;');
+  const reviewLine = 'const isReviewDay = isReviewDayOn(now, tz);';
+  if (!body.includes(reviewLine)) throw new Error('hold harness: isReviewDay line not found in workflow source');
+  body = body.replace(reviewLine, 'const isReviewDay = false;');
   // The hold path spawns lesson-web.py --open, which would pop a browser and leave a server
   // running. Point it at nothing: the spawn fails into its own catch, which is the exact
   // "delivery failed, the file is written anyway" path the workflow already handles.
@@ -811,6 +814,16 @@ test('an eligible absence weekday is held by the workflow itself — no agent, m
   assert.match(written, /## Track A/, 'the previous weekday body must be carried forward verbatim');
 
   assert.match(graded, /^type: skipped$/m, 'yesterday must be graded skipped by the hold path');
+});
+
+test('a hold day never carries attempt records forward into today\'s lesson', async () => {
+  const { called, written, graded } = await runHoldScenario({ withMetrics: true, withAttempts: true });
+  assert.equal(called, false, 'precondition: the hold path must have fired');
+  assert.ok(written, 'precondition: a hold day must write today\'s lesson file');
+  const { parseAttempts } = await loadEvidenceModule();
+  assert.equal(parseAttempts(written).present, false,
+    'the held lesson must not repeat the source lesson\'s attempts — that would double-count evidence');
+  assert.equal(parseAttempts(graded).present, true, 'the graded source keeps its own attempts');
 });
 
 test('a missing metrics line declines the hold and falls back to the agent', async () => {

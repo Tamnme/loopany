@@ -23,7 +23,7 @@ const day = (s) => new Date(s + 'T00:00:00Z');
 //
 // `overrides` lets an individual test punch in extra rel-path -> Date stamps *after* the
 // baseline below, to build a scenario-specific pool without duplicating this whole function.
-async function stampFixtureMtimes(overrides = {}) {
+async function stampFixtureMtimes(overrides = {}, cutoffExtraFrontMatter = '') {
   const stamp = async (rel, date) => {
     await fs.utimes(path.join(FIXTURE, rel), date, date);
   };
@@ -38,7 +38,7 @@ async function stampFixtureMtimes(overrides = {}) {
   // fresh, known birthtime, then push mtime forward to simulate a post-issue write-back.
   const cutoffLesson = path.join(FIXTURE, 'loopany/daily-lesson/lessons/2026-08-02.md');
   await fs.rm(cutoffLesson, { force: true });
-  await fs.writeFile(cutoffLesson, '---\ntype: done\n---\nSome content\n');
+  await fs.writeFile(cutoffLesson, `---\ntype: done\n${cutoffExtraFrontMatter}---\nSome content\n`);
   const birth = (await fs.stat(cutoffLesson)).birthtimeMs;
   const writeBackMs = birth + 60 * 60 * 1000; // +1h: simulated post-issue answer write-back
   await fs.utimes(cutoffLesson, new Date(writeBackMs), new Date(writeBackMs));
@@ -116,9 +116,16 @@ async function runWorkflow(opts = {}) {
   if (baseVal === FIXTURE) {
     // Re-stamp before every fixture run so no test can accidentally run against whatever
     // mtimes the filesystem happens to have. Never touches the real tree (opts.base skips this).
-    await stampFixtureMtimes(opts.mtimeOverrides || {});
+    await stampFixtureMtimes(opts.mtimeOverrides || {}, opts.cutoffExtraFrontMatter || '');
   }
   let body = await fs.readFile(SRC, 'utf8');
+
+  // Pins the workflow's `today` so a fixture lesson can land on a ladder rung.
+  if (opts.today !== undefined) {
+    const todayStr = "const today = now.toLocaleDateString('en-CA', tz);";
+    if (!body.includes(todayStr)) throw new Error('Could not find the `const today = ...` line in the workflow file');
+    body = body.replace(todayStr, `const today = '${opts.today}';`);
+  }
 
   const searchStr = "const base = '/Users/tamnm/code/personal';";
   if (!body.includes(searchStr)) {
@@ -765,7 +772,15 @@ async function runHoldScenario({ withMetrics, withAttempts = false }) {
   );
 
   let body = await fs.readFile(SRC, 'utf8');
-  body = body.replace("const base = '/Users/tamnm/code/personal';", `const base = '${tmpBase}';`);
+  // A silent no-op on either replace below would write the REAL lessons tree / open a browser.
+  const guard = async (needle, what) => {
+    if (body.includes(needle)) return;
+    await fs.rm(tmpBase, { recursive: true, force: true });
+    throw new Error(`hold harness: ${what} not found in workflow source`);
+  };
+  const baseLine = "const base = '/Users/tamnm/code/personal';";
+  await guard(baseLine, 'base line');
+  body = body.replace(baseLine, `const base = '${tmpBase}';`);
   // Same source-surgery technique as the `base` and HOST_TIMEOUT_MS overrides above. Friday is
   // real work and falls through to the agent by design — pinning this false keeps the test from
   // failing one day in seven for a reason that has nothing to do with the interlock.
@@ -775,7 +790,9 @@ async function runHoldScenario({ withMetrics, withAttempts = false }) {
   // The hold path spawns lesson-web.py --open, which would pop a browser and leave a server
   // running. Point it at nothing: the spawn fails into its own catch, which is the exact
   // "delivery failed, the file is written anyway" path the workflow already handles.
-  body = body.replace("'/Users/tamnm/.claude/tools/lesson-web.py'", "'/nonexistent/lesson-web.py'");
+  const webPy = "'/Users/tamnm/.claude/tools/lesson-web.py'";
+  await guard(webPy, 'lesson-web.py path');
+  body = body.replace(webPy, "'/nonexistent/lesson-web.py'");
 
   const tmp = path.join(here, `.wf.hold.harness.${Date.now()}.${Math.random().toString(36).slice(2)}.mjs`);
   await fs.writeFile(tmp, `export default async function(){\n${body}\n}`);
@@ -846,7 +863,7 @@ async function loadEvidenceModule() {
   if (start === -1 || end === -1) {
     throw new Error('Could not locate the evidence-levels block in the workflow source');
   }
-  const wrapped = `${body.slice(start, end)}\nexport { REVIEW_DAY, RUNGS, parseAttempts, deriveConcepts, lessonLadder, conceptIdsIn, unknownIdsOf, isReviewDayOn };\n`;
+  const wrapped = `${body.slice(start, end)}\nexport { REVIEW_DAY, RUNGS, parseAttempts, deriveConcepts, lessonLadder, conceptLadder, conceptIdsIn, unknownIdsOf, isReviewDayOn };\n`;
   const tmp = path.join(here, `.wf.evidence.harness.${Date.now()}.${Math.random().toString(36).slice(2)}.mjs`);
   await fs.writeFile(tmp, wrapped);
   try {
@@ -892,6 +909,55 @@ test('parseAttempts reads front-matter records only, in both key=value and key: 
   ]);
 });
 
+test('parseAttempts accepts list items with no indentation', async () => {
+  const { parseAttempts } = await loadEvidenceModule();
+  const p = parseAttempts('---\ntype: done\nattempts:\n- id=b1.zobrist result=correct help=none kind=application\n- id=b1.minimax result=partial help=hint kind=retrieval\nanswered_at: x\n---\n');
+  assert.equal(p.present, true);
+  assert.deepEqual(p.attempts, [
+    { id: 'b1.zobrist', result: 'correct', help: 'none', kind: 'application' },
+    { id: 'b1.minimax', result: 'partial', help: 'hint', kind: 'retrieval' },
+  ]);
+  assert.deepEqual(p.errors, []);
+});
+
+test('parseAttempts: a value on the attempts: line itself is present and an error, never silently absent', async () => {
+  const { parseAttempts } = await loadEvidenceModule();
+  const p = parseAttempts('---\ntype: done\nattempts: [ id=b1.zobrist result=correct help=none kind=application ]\n---\n');
+  assert.equal(p.present, true);
+  assert.deepEqual(p.attempts, []);
+  assert.deepEqual(p.errors, ['attempts: [ id=b1.zobrist result=correct help=none kind=application ]']);
+});
+
+test('parseAttempts strips one pair of surrounding quotes from an item', async () => {
+  const { parseAttempts } = await loadEvidenceModule();
+  const p = parseAttempts('---\nattempts:\n  - "id=b1.zobrist result=correct help=none kind=application"\n  - \'id=b1.minimax result=incorrect help=none kind=retrieval\'\n---\n');
+  assert.deepEqual(p.attempts, [
+    { id: 'b1.zobrist', result: 'correct', help: 'none', kind: 'application' },
+    { id: 'b1.minimax', result: 'incorrect', help: 'none', kind: 'retrieval' },
+  ]);
+  assert.deepEqual(p.errors, []);
+});
+
+test('deriveConcepts and lessonLadder skip an impossible date instead of throwing', async () => {
+  const { deriveConcepts, lessonLadder } = await loadEvidenceModule();
+  let c;
+  assert.doesNotThrow(() => {
+    c = deriveConcepts([
+      rec('2026-13-45', 'b1.bad', 'correct', 'none', 'application'),
+      rec('2026-10-01', 'b1.ok', 'correct', 'none', 'application'),
+    ], '2026-10-04');
+  });
+  assert.deepEqual(Object.keys(c), ['b1.ok'], 'the impossible-date record is ignored');
+  let due;
+  assert.doesNotThrow(() => {
+    due = lessonLadder([
+      { date: '2026-13-45', type: 'done', title: 'Bad' },
+      { date: '2026-09-27', type: 'done', title: 'A' },
+    ], '2026-10-04', new Set());
+  });
+  assert.deepEqual(due.map((d) => d.date), ['2026-09-27']);
+});
+
 test('parseAttempts on a pre-cutover lesson: present false, nothing parsed, never throws', async () => {
   const { parseAttempts } = await loadEvidenceModule();
   assert.deepEqual(parseAttempts('---\ntype: done\n---\n### My answer\nx\n'), { present: false, attempts: [], errors: [] });
@@ -923,7 +989,9 @@ test('deriveConcepts: every level transition', async () => {
   assert.equal(c['b1.g'].level, 'practicing', 'partial after a success is practicing, not needs-repair');
   assert.equal(c['b1.k'].level, 'demonstrated', 'a first-ever clean retrieval has nothing to have retained');
   assert.equal(c['b1.k'].rung, 0);
-  assert.deepEqual(Object.keys(c['b1.a']).sort(), ['due', 'is_due', 'last_date', 'level', 'rung']);
+  assert.deepEqual(Object.keys(c['b1.a']).sort(), ['due', 'is_due', 'last_date', 'level', 'rung', 'rung_label']);
+  assert.equal(c['b1.a'].rung_label, '1w');
+  assert.equal(c['b1.c'].rung_label, '4w');
 });
 
 test('deriveConcepts: rung advances only on a clean retrieval, holds otherwise, caps at 12w', async () => {
@@ -1025,6 +1093,40 @@ test('payload carries derived concepts, unknown IDs, parse errors, and a tagged 
   assert.equal(p.is_review_day, p.weekday === 'Friday');
 });
 
+test('a lesson whose attempts list is all malformed stays on the date ladder', async () => {
+  // 2026-08-02 is 7 days before the pinned today: on the 1w rung unless wrongly skipped.
+  const p = await runWorkflow({
+    today: '2026-08-09',
+    cutoffExtraFrontMatter: 'attempts:\n  - id=garbage2 result=maybe\n',
+  });
+  assert.ok(p, 'agent() was never called');
+  assert.deepEqual(p.attempt_parse_errors.filter((e) => e.date === '2026-08-02'),
+    [{ date: '2026-08-02', line: '- id=garbage2 result=maybe' }], 'precondition: the list was read and rejected');
+  assert.ok(
+    p.due_review.some((d) => d.source === 'lesson' && d.date === '2026-08-02' && d.rung === '1w'),
+    `expected 2026-08-02 on the date ladder, got ${JSON.stringify(p.due_review)}`,
+  );
+  assert.ok(!p.due_review.some((d) => d.source === 'lesson' && d.date === '2026-08-01'),
+    'control: 08-01 has valid attempts, so it stays off the date ladder');
+});
+
+test('conceptLadder: due concepts only, most overdue first, tagged with rung label', async () => {
+  const { deriveConcepts, conceptLadder } = await loadEvidenceModule();
+  const c = deriveConcepts([
+    // First seen earliest, so insertion order alone would put it first.
+    rec('2026-07-01', 'b1.mid', 'partial', 'none', 'application'),
+    rec('2026-09-20', 'b1.mid', 'correct', 'none', 'application'), // due 09-27
+    rec('2026-09-30', 'b1.edge', 'correct', 'none', 'application'), // due 10-07
+    rec('2026-08-01', 'b1.over', 'correct', 'none', 'application'), // due 08-08
+    rec('2026-10-03', 'b1.later', 'correct', 'none', 'application'), // due 10-10, not due
+  ], '2026-10-04');
+  assert.deepEqual(conceptLadder(c), [
+    { id: 'b1.over', level: 'demonstrated', rung: '1w', due: '2026-08-08', source: 'concept' },
+    { id: 'b1.mid', level: 'demonstrated', rung: '1w', due: '2026-09-27', source: 'concept' },
+    { id: 'b1.edge', level: 'demonstrated', rung: '1w', due: '2026-10-07', source: 'concept' },
+  ]);
+});
+
 test('the real brief registers IDs for every B1 part 2 concept, every ds:: structure and chess phases 0-8', async () => {
   const { conceptIdsIn } = await loadEvidenceModule();
   const brief = await fs.readFile(path.join(here, '..', 'loopany/daily-lesson/README.md'), 'utf8');
@@ -1076,4 +1178,13 @@ test('the prompt explains cargo.why and the done|partial preference for lesson-l
   for (const s of ['cargo.why', 'done|partial', 'held copies', 'Drop a slot rather than']) {
     assert.ok(prompt.includes(s), `prompt is missing ${s}`);
   }
+});
+
+test('the prompt orders concept entries most-overdue-first and names lesson entries by what they lack', async () => {
+  const src = await fs.readFile(SRC, 'utf8');
+  const prompt = src.slice(src.search(/^await agent\(/m));
+  for (const s of ['take the most overdue first', 'lessons without attempt records']) {
+    assert.ok(prompt.includes(s), `prompt is missing ${s}`);
+  }
+  assert.ok(!prompt.includes('lessons from before attempt records existed'), 'old wording still present');
 });

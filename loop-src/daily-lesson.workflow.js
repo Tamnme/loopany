@@ -49,6 +49,7 @@ const isReviewDayOn = (date, tz) =>
 
 const daysBetween = (a, b) => (Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000;
 const addDays = (d, n) => new Date(Date.parse(d + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+const isDate = (d) => Number.isFinite(Date.parse(d + 'T00:00:00Z'));
 
 // Front-matter only: an `attempts:` line in the lesson body is prose, not a record. CRLF is
 // normalised because lesson-web.py rewrites these files with the owner's answers.
@@ -57,14 +58,19 @@ const parseAttempts = (text) => {
   const errors = [];
   const fm = /^---\n([\s\S]*?)\n---/.exec(text.replace(/\r\n/g, '\n'));
   const lines = fm ? fm[1].split('\n') : [];
-  const start = lines.findIndex((l) => /^attempts:\s*$/.test(l));
+  const start = lines.findIndex((l) => /^attempts:/.test(l));
   if (start < 0) return { present: false, attempts, errors };
+  // An inline value (`attempts: [ … ]`) is not the contract: present, and an error, so it shows
+  // up in attempt_parse_errors instead of reading as "no records".
+  if (!/^attempts:\s*$/.test(lines[start])) errors.push(lines[start].trim());
   for (const line of lines.slice(start + 1)) {
-    if (!/^\s+-/.test(line)) break; // the next top-level key ends the list
+    if (!/^\s*-/.test(line)) break; // the next top-level key ends the list; YAML allows `- ` at col 0
     const r = {};
+    // One pair of surrounding quotes is YAML string habit, not part of the record.
+    const item = line.trim().replace(/^-\s*/, '').replace(/^(["'])(.*)\1$/, '$2');
     // `key=value` is the contract; `key: value` is accepted because an agent copying YAML habits
     // would otherwise turn every record into a parse error.
-    for (const m of line.matchAll(/(\w+)\s*[=:]\s*([^\s,]+)/g)) r[m[1]] = m[2];
+    for (const m of item.matchAll(/(\w+)\s*[=:]\s*([^\s,]+)/g)) r[m[1]] = m[2];
     if (ID_RE.test(r.id || '') && RESULTS.includes(r.result) && HELPS.includes(r.help) && KINDS.includes(r.kind)) {
       attempts.push({ id: r.id, result: r.result, help: r.help, kind: r.kind });
     } else {
@@ -80,7 +86,8 @@ const parseAttempts = (text) => {
 const deriveConcepts = (records, today) => {
   const out = {};
   const prior = {};
-  const ordered = [...records].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  // An impossible date (`2026-13-45.md`) would make addDays throw a RangeError; skip it.
+  const ordered = records.filter((r) => isDate(r.date)).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   for (const r of ordered) {
     const c = out[r.id] || (out[r.id] = { level: null, rung: 0, last_date: null });
     const clean = r.result === 'correct' && r.help === 'none';
@@ -98,6 +105,7 @@ const deriveConcepts = (records, today) => {
     c.last_date = r.date;
   }
   for (const c of Object.values(out)) {
+    c.rung_label = RUNGS[c.rung].rung;
     c.due = addDays(c.last_date, RUNGS[c.rung].days);
     // Overdue stays due: the due date only moves on a new attempt, so a strict window would
     // drop a concept for good after one failed review-day run.
@@ -127,6 +135,7 @@ const lessonLadder = (history, today, skip) => {
   const sorted = [...history].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   for (const h of sorted) {
     if (h.type === 'assigned' || skip.has(h.date)) continue; // never taught-and-graded yet
+    if (!isDate(h.date)) continue; // an impossible file date is not on any rung
     const age = daysBetween(h.date, today);
     for (const r of RUNGS) {
       if (Math.abs(age - r.days) <= DUE_SLACK_DAYS) {
@@ -138,6 +147,13 @@ const lessonLadder = (history, today, skip) => {
   }
   return [...dueSeen.values()];
 };
+
+// The concept half of due_review: due concepts only, most overdue first (ISO dates sort as text).
+const conceptLadder = (concepts) =>
+  Object.entries(concepts)
+    .filter(([, c]) => c.is_due)
+    .map(([id, c]) => ({ id, level: c.level, rung: c.rung_label, due: c.due, source: 'concept' }))
+    .sort((a, b) => (a.due < b.due ? -1 : a.due > b.due ? 1 : 0));
 
 // The README is the ID registry: every ID written in backticks. rustlings IDs are not listed
 // there — `rs.<name>` is valid when <name> is in rustlings' own bin list.
@@ -218,7 +234,9 @@ for (const f of files) {
   const date = f.replace('.md', '');
   history.push({ date, type: typeOf(text), title: titleOf(text) });
   const parsed = parseAttempts(text);
-  if (parsed.present) datesWithAttempts.add(date);
+  // Only real records move a lesson off the date ladder — an empty or all-malformed list would
+  // otherwise drop it from review with nothing on the concept ladder to replace it.
+  if (parsed.attempts.length > 0) datesWithAttempts.add(date);
   for (const a of parsed.attempts) attemptRecords.push({ date, ...a });
   for (const line of parsed.errors) attemptParseErrors.push({ date, line });
 }
@@ -230,15 +248,13 @@ const weekNumber = history.length
   : 1;
 
 // The spaced-repetition ladder, derived. Concepts with attempt records ride the concept
-// ladder (rung climbs only on a clean retrieval); lessons from before attempt records existed
+// ladder (rung climbs only on a clean retrieval); lessons without attempt records
 // keep the old date ladder. A review day draws its questions from both; the wrong-answer
 // queue in the task file is only the exception list on top of it.
 const concepts = deriveConcepts(attemptRecords, today);
 const dueReview = [
   ...lessonLadder(history, today, datesWithAttempts),
-  ...Object.entries(concepts)
-    .filter(([, c]) => c.is_due)
-    .map(([id, c]) => ({ id, level: c.level, rung: RUNGS[c.rung].rung, due: c.due, source: 'concept' })),
+  ...conceptLadder(concepts),
 ];
 
 // Yesterday's lesson — the one this run grades.
@@ -875,7 +891,7 @@ await agent(
     'curriculum — no new concept on either track, a 5-question test as Track B and a small project as Track A, ' +
     'and grade Track A on cargo (the review_* test file) rather than on rustlings.done. ' +
     'history carries each lesson\'s title, so build the test from those titles rather than re-reading the week. ' +
-    'due_review is the spaced-repetition ladder already computed. Entries with source \'concept\' come from attempt records — concepts[id] holds that concept\'s level (practicing, demonstrated, retained, needs-repair), rung and due date; entries with source \'lesson\' are lessons from before attempt records existed, still on the old ~1w/~4w/~12w date ladder, already deduped so a stretch of held copies collapses to the one day that topic was actually served. ' +
+    'due_review is the spaced-repetition ladder already computed. Entries with source \'concept\' come from attempt records — concepts[id] holds that concept\'s level (practicing, demonstrated, retained, needs-repair), rung and due date, and they are sorted by due — take the most overdue first; entries with source \'lesson\' are lessons without attempt records, still on the old ~1w/~4w/~12w date ladder, already deduped so a stretch of held copies collapses to the one day that topic was actually served. ' +
     'Draw the older questions and the small project from both, preferring \'lesson\' entries whose type is done|partial: a `skipped` entry was served into an empty room and never learned, so asking it as recall asks for something never seen — teach it fresh or take the next candidate instead. Drop a slot rather than padding. The task file\'s Review queue is the exception list layered on top — a concept whose level is needs-repair goes into it like a wrong answer — and Retired items are dropped from the draw. ' +
     'When you grade prev_lesson, write its attempts: front-matter exactly as the brief\'s "Attempt records" paragraph says. unknown_ids lists attempt IDs the brief does not register — name them in your report (null means the brief was unreadable, so the check did not run); attempt_parse_errors lists record lines that did not parse — name them, never rewrite an older lesson. ' +
     'rustlings.next_exercises is the ordered slice of exercises starting AT current_exercise, straight from Cargo.toml\'s bin list (the authoritative exercise order, quizzes included), each with its path and source text. Size today\'s Track A step off it and quote its "done when" from it — never go grep the manifest or cat the sources, and never infer the order from section directory names, which is what mis-assigned lesson 5. Empty means the state file and manifest disagree: then, and only then, check the bin list yourself. ' +

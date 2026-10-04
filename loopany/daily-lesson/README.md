@@ -709,10 +709,10 @@ block at the top of `## Track A · Rust`, above today's assignment, inside its 2
   three sections cut at once. The Spec's *Absence, not difficulty* rule now stops the ladder at
   `consecutive_skips ≥ 3`. Don't restart it: a design that landed 13 days running did not become
   too hard overnight.
-- **The four non-chess structures are unblocked and Sunday is where they ship.** `Queue` needed
+- **The four non-chess structures are unblocked and Friday is where they ship.** `Queue` needed
   only a struct and a `Vec`, both taught long ago — it sat undone because no run checked whether
   it was due. `LinkedList` and `BST` still wait on `Box`/`Option`; `Graph` is unblocked after
-  `Queue`. Check this list every Sunday before falling back to a review project.
+  `Queue`. Check this list every Friday before falling back to a review project.
 - **Never build a silent-failure device into a step.** A deliberately-undeclared `src/chess/piece.rs`
   (missing `pub mod piece;` was meant to *be* the exercise) failed silently instead of loudly and
   cost phase 1 two days; dismantled 08-15. The failing-test contract depends on red meaning red.
@@ -744,7 +744,7 @@ block at the top of `## Track A · Rust`, above today's assignment, inside its 2
   work — the cutoff logic is right. Two consequences: a day graded `skipped` at 09:00 may simply
   not have happened *yet*, and any question the loop asks gets answered a full day later at best.
   Don't read a same-morning zero as a decision.
-- **Review queue** — the *exception* list only: answered wrong, waiting for next Sunday. Max 3,
+- **Review queue** — the *exception* list only: answered wrong, waiting for next Friday. Max 3,
   oldest falls off; removed after one retry, right or wrong. On-time review of everything else
   comes from `due_review`, never listed here. **At cap 3 after 08-11** (heaps added, so the
   08-09 BST item aged off unasked — the ladder still covers BST via lessons 8/9). **Borrows was

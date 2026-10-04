@@ -933,7 +933,8 @@ test('the real brief registers IDs for every B1 part 2 concept, every ds:: struc
 
 test('the prompt names Friday and the new payload keys, and no longer says Sunday', async () => {
   const src = await fs.readFile(SRC, 'utf8');
-  const prompt = src.slice(src.indexOf('await agent('));
+  assert.ok(src.search(/^await agent\(/m) > 0, 'could not find the agent call');
+  const prompt = src.slice(src.search(/^await agent\(/m));
   for (const s of ['FRIDAY', 'concepts', 'unknown_ids', 'attempt_parse_errors', 'needs-repair', 'Attempt records']) {
     assert.ok(prompt.includes(s), `prompt is missing ${s}`);
   }

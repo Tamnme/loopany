@@ -899,3 +899,19 @@ test('isReviewDayOn is Friday in Asia/Ho_Chi_Minh, not UTC', async () => {
   assert.equal(isReviewDayOn(new Date('2026-10-08T17:30:00Z'), tz), true, '00:30 Friday local, still Thursday in UTC');
   assert.equal(isReviewDayOn(new Date('2026-10-11T02:00:00Z'), tz), false, 'Sunday is a normal day now');
 });
+
+test('payload carries derived concepts, unknown IDs, parse errors, and a tagged ladder', async () => {
+  const p = await runWorkflow();
+  assert.ok(p, 'agent() was never called');
+  assert.equal(p.concepts['b1.alpha-beta'].level, 'demonstrated');
+  assert.equal(p.concepts['b1.not-in-readme'].level, 'practicing');
+  assert.deepEqual(p.unknown_ids, ['b1.not-in-readme']);
+  assert.deepEqual(p.attempt_parse_errors, [{ date: '2026-08-01', line: '- id=garbage result=maybe' }]);
+  // 2026-08-01 + 7 days is long past, and overdue stays due.
+  assert.ok(
+    p.due_review.some((d) => d.source === 'concept' && d.id === 'b1.alpha-beta' && d.rung === '1w'),
+    `expected b1.alpha-beta on the concept ladder, got ${JSON.stringify(p.due_review)}`,
+  );
+  assert.ok(p.due_review.every((d) => d.source === 'concept' || d.source === 'lesson'));
+  assert.equal(p.is_review_day, p.weekday === 'Friday');
+});

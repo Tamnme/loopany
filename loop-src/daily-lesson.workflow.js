@@ -144,10 +144,10 @@ const unknownIdsOf = (concepts, readme, binNames) => {
 const tz = { timeZone: 'Asia/Ho_Chi_Minh' };
 const now = new Date();
 const today = now.toLocaleDateString('en-CA', tz);
-// Sunday = review day: no new concept, a test + a small project instead. Weekday name is
+// REVIEW_DAY (Friday) = no new concept, a test + a small project instead. Weekday name is
 // computed in the owner's zone, not UTC, or the boundary run flips to the wrong day.
 const weekday = now.toLocaleDateString('en-US', { ...tz, weekday: 'long' });
-const isReviewDay = weekday === 'Sunday';
+const isReviewDay = isReviewDayOn(now, tz);
 
 let files = [];
 try {
@@ -171,9 +171,17 @@ if (files.includes(today + '.md')) {
 // Every lesson's date + graded type + title — the agent's `ls lessons/` opener, done once
 // here. `title` is what a review day builds its questions from without re-reading the week.
 const history = [];
+const attemptRecords = [];
+const attemptParseErrors = [];
+const datesWithAttempts = new Set();
 for (const f of files) {
   const text = await fs.readFile(lessonsDir + '/' + f, 'utf8');
-  history.push({ date: f.replace('.md', ''), type: typeOf(text), title: titleOf(text) });
+  const date = f.replace('.md', '');
+  history.push({ date, type: typeOf(text), title: titleOf(text) });
+  const parsed = parseAttempts(text);
+  if (parsed.present) datesWithAttempts.add(date);
+  for (const a of parsed.attempts) attemptRecords.push({ date, ...a });
+  for (const line of parsed.errors) attemptParseErrors.push({ date, line });
 }
 
 // Week 1 is the first 7 days from the first lesson ever. Only used to label a review day.
@@ -182,20 +190,17 @@ const weekNumber = history.length
   ? Math.floor((dnum(today) - dnum(history[0].date)) / 7) + 1
   : 1;
 
-// The spaced-repetition ladder, derived — EVERY lesson comes back at ~1, ~4 and ~12 weeks,
-// not just the ones answered wrong. A review day draws its questions from this; the
-// wrong-answer queue in the task file is only the exception list on top of it.
-// Windows are ±3 days so a rung can't be missed by landing between two Sundays.
-const dueReview = [];
-for (const h of history) {
-  if (h.type === 'assigned') continue; // never taught-and-graded yet
-  const age = dnum(today) - dnum(h.date);
-  for (const r of RUNGS) {
-    if (Math.abs(age - r.days) <= 3) {
-      dueReview.push({ date: h.date, title: h.title, type: h.type, rung: r.rung, age_days: age });
-    }
-  }
-}
+// The spaced-repetition ladder, derived. Concepts with attempt records ride the concept
+// ladder (rung climbs only on a clean retrieval); lessons from before attempt records existed
+// keep the old date ladder. A review day draws its questions from both; the wrong-answer
+// queue in the task file is only the exception list on top of it.
+const concepts = deriveConcepts(attemptRecords, today);
+const dueReview = [
+  ...lessonLadder(history, today, datesWithAttempts),
+  ...Object.entries(concepts)
+    .filter(([, c]) => c.is_due)
+    .map(([id, c]) => ({ id, level: c.level, rung: RUNGS[c.rung].rung, due: c.due, source: 'concept' })),
+];
 
 // Yesterday's lesson — the one this run grades.
 let prevLesson = null;
@@ -281,6 +286,16 @@ try {
 } catch (e) {
   binMap = {}; // manifest unreadable — feedback degrades to nothing, never to a failed run
 }
+
+// The brief is the concept-ID registry. Unreadable → null, which the agent must read as
+// "the check did not run", never as "no unknown IDs".
+let briefText = null;
+try {
+  briefText = await fs.readFile(base + '/loopany/daily-lesson/README.md', 'utf8');
+} catch (e) {
+  briefText = null;
+}
+const unknownIds = unknownIdsOf(concepts, briefText, Object.keys(binMap));
 
 // The next exercises in rustlings' OWN order — the one thing every run went hunting for by
 // hand. Run 7 spent five shell commands on it (`ls exercises/`, greps over `info.toml`, then
@@ -698,6 +713,9 @@ await agent(
     is_review_day: isReviewDay,
     week_number: weekNumber,
     due_review: dueReview,
+    concepts,
+    unknown_ids: unknownIds,
+    attempt_parse_errors: attemptParseErrors,
     prev_lesson: prevLesson,
     history,
     streak_before_prev: streakBeforePrev,

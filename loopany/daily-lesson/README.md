@@ -14,7 +14,7 @@
 > /usr/bin/sed -n '/^## Spec/,/^\*\*Each run, in order:\*\*/p' README.md
 > # 3. the run procedure, steps 1–7 (~23 KB)
 > /usr/bin/sed -n '/^\*\*Each run, in order:\*\*/,/^\*\*Curriculum\.\*\*/p' README.md
-> # 4. curriculum + Sunday + code-feedback tables (~9 KB)
+> # 4. curriculum + Friday + code-feedback tables (~9 KB)
 > /usr/bin/sed -n '/^\*\*Curriculum\.\*\*/,/^## Current understanding/p' README.md
 > # 5. recent history only — the older spine is almost never worth reading
 > /usr/bin/awk 'f;/^## Timeline/{f=1}' README.md | /usr/bin/tail -40
@@ -67,7 +67,7 @@ teaches an invariant that building the happy path does not. It is fenced, and ev
 is load-bearing:
 
 - **It lives in `rust-dsa/tests/invert_<YYYY_MM_DD>.rs`, never in `src/`.** The wrong function is
-  a local `fn` inside that test file — same shape as Sunday's `tests/review_<YYYY_MM_DD>.rs`. The
+  a local `fn` inside that test file — same shape as Friday's `tests/review_<YYYY_MM_DD>.rs`. The
   engine stays clean, and nothing in `src/` can be mistaken for phase progress.
 - **Only on a phase already closed, at most once per phase, never on the phase in flight.** It is
   a review of banked work, so it can never block or fake the current step.
@@ -103,7 +103,7 @@ Track B runs in two stages, because 15 minutes will not hold two coding tracks:
   |---|---|
   | A concept served for the first time | **Forward** |
   | A repeat serve — the held concept during `presence.any: false`, or a re-served pair | **Inverted** |
-  | Sunday review, and every wrong-answer-queue item | **Inverted** |
+  | Friday review, and every wrong-answer-queue item | **Inverted** |
 
   The rule is not decoration: on those repeat days the Spec already **forbids re-teaching** and
   still requires re-asking (*Rotate forward on the RETURN day* says re-serve unchanged and cut
@@ -128,21 +128,21 @@ Track B runs in two stages, because 15 minutes will not hold two coding tracks:
 
 **Chess roadmap.** Phases, not dates. Each is several days; advance only when its test passes.
 
-| Phase | Chess | Rust it needs | Structure it earns |
-|---|---|---|---|
-| 0 | `Square` newtype, `"e4"` ↔ index round-trip | structs | — |
-| 1 | `Color`/`PieceKind` enums, `Board([Option<Piece>; 64])`, `Display` | enums, `Option` | — |
-| 2 | FEN parse, pseudo-legal moves per piece | strings, vecs, iterators | `ds::Vec` (move list) |
-| 3 | make/unmake, legality via king-in-check | structs, generics | `ds::Stack` (undo) |
-| 4 | perft 1–3, castling, en passant, promotion | — | — |
-| 5 | eval, minimax, alpha-beta | recursion, lifetimes | the search tree |
-| 6 | move ordering | traits, `Ord` | `ds::BinaryHeap` |
-| 7 | Zobrist hashing, transposition table, threefold repetition | hashmaps, smart pointers | `ds::HashMap` |
-| 8 | `[[bin]]` terminal game vs human | error handling | — |
+| Phase | ID | Chess | Rust it needs | Structure it earns |
+|---|---|---|---|---|
+| 0 | `chess.p0` | `Square` newtype, `"e4"` ↔ index round-trip | structs | — |
+| 1 | `chess.p1` | `Color`/`PieceKind` enums, `Board([Option<Piece>; 64])`, `Display` | enums, `Option` | — |
+| 2 | `chess.p2` | FEN parse, pseudo-legal moves per piece | strings, vecs, iterators | `ds::Vec` (move list) |
+| 3 | `chess.p3` | make/unmake, legality via king-in-check | structs, generics | `ds::Stack` (undo) |
+| 4 | `chess.p4` | perft 1–3, castling, en passant, promotion | — | — |
+| 5 | `chess.p5` | eval, minimax, alpha-beta | recursion, lifetimes | the search tree |
+| 6 | `chess.p6` | move ordering | traits, `Ord` | `ds::BinaryHeap` |
+| 7 | `chess.p7` | Zobrist hashing, transposition table, threefold repetition | hashmaps, smart pointers | `ds::HashMap` |
+| 8 | `chess.p8` | `[[bin]]` terminal game vs human | error handling | — |
 
 `LinkedList`, `Queue`, `BST` and `Graph` have **no honest use in a chess engine**. Forcing
 them in would rebuild the fake-exercise feeling this redesign exists to remove, so they are
-built as standalone `ds::` modules on Sundays instead — see *Sunday · Review day*.
+built as standalone `ds::` modules on Fridays instead — see *Friday · Review day*.
 
 **Keep `cargo test` under 8 seconds.** `CARGO_TEST_HARD_CAP_MS` in the workflow is 8000 ms and
 covers compile *and* run; blow it and `cargo.ok` goes false, which means grading goes blind.
@@ -192,12 +192,25 @@ Never run `cargo`, `rustlings`, or create a checkout inside `loopany/`.
    Then edit that file's front-matter `type:` in place: `done` (both tracks passed),
    `partial` (one track only), `skipped` (neither). A lesson issued before Track B existed
    has no Track B section — grade it on Track A alone, `done` or `skipped`.
-   **Grading a Sunday review day** uses the same two rules with one swap: Track A is judged on
-   `cargo` alone (the `ds::` module's tests, or the `review_*` file's, whichever Sunday
+   **Grading a Friday review day** uses the same two rules with one swap: Track A is judged on
+   `cargo` alone (the `ds::` module's tests, or the `review_*` file's, whichever Friday
    assigned), never on `rustlings.done` and with no chess half. Any test question
-   answered wrong goes into the *Review queue*, and the item that Sunday pulled *from* the
+   answered wrong goes into the *Review queue*, and the item that Friday pulled *from* the
    queue is dropped from it either way.
-2. **Sunday?** Then skip to the *Sunday · Review day* section — no new concepts today, and no
+
+   **Attempt records.** In the same edit, add an `attempts:` list to that file's front-matter
+   — one line per concept the lesson tested, exactly this shape:
+
+       attempts:
+         - id=b1.alpha-beta result=correct help=none kind=application
+
+   `id` is the concept's ID (see *Concept IDs*). `result` is `correct`, `partial` or
+   `incorrect`: Track A and B2 from `rustlings.done` / `cargo`, never your impression; B1 from
+   `### My answer`. `help` is `none` on a first serve and `hint` when the concept was re-served,
+   shrunk or held. `kind` is `retrieval` on review day or a ladder re-ask, otherwise
+   `application`. A skipped track writes **no** line — no attempt is not an `incorrect`. Never
+   edit an older lesson's attempts. The workflow derives each concept's level from these.
+2. **Friday?** Then skip to the *Friday · Review day* section — no new concepts today, and no
    curriculum advance on either track. Otherwise **pick today's two steps** — see
    *Curriculum*, adapting per track **independently**. A track that was skipped re-teaches the
    same concept a different way and does **not** advance; two skips in a row on one concept →
@@ -481,6 +494,12 @@ On lesson 1 or after a duplicate wake, drop the verdict clause rather than inven
 No preamble, no encouragement, no second sentence — the dashboard's **Today** tab carries
 the detail.
 
+**Concept IDs.** Every concept has an ID in backticks: `b1.<slug>`, `ds.<struct>`,
+`chess.p<n>`, and `rs.<exercise>` for rustlings (the exercise name itself — not listed here,
+the workflow checks it against rustlings' bin list). **An ID is never renamed or reused:** a
+renamed concept gets a new ID and the old one stays. The workflow reads IDs out of this file;
+an attempt naming one it cannot find comes back in `unknown_ids`.
+
 **Curriculum.**
 
 - **Track A · Rust foundations** (`rustlings`, in order): variables, functions, if,
@@ -489,23 +508,25 @@ the detail.
   The order is handed over as `next_exercises`; this list is the shape, not the source.
   Source: <https://github.com/rust-lang/rustlings> + the Book chapter each section maps to.
 - **Track B · DSA.** Stage **B1** is theory by hand, in order, and comes in two parts.
-  **Part 1 · classical DSA — complete as of 2026-08-13:** complexity & Big-O → arrays &
-  dynamic arrays (amortized growth) → linked lists → stacks → queues → hashing → trees & BST
-  → heaps → graphs (representations, BFS/DFS) → sorting → recursion & divide-and-conquer.
+  **Part 1 · classical DSA — complete as of 2026-08-13:** complexity & Big-O `b1.big-o`
+  → arrays & dynamic arrays (amortized growth) `b1.arrays` → linked lists `b1.linked-lists`
+  → stacks `b1.stacks` → queues `b1.queues` → hashing `b1.hashing` → trees & BST
+  `b1.trees-bst` → heaps `b1.heaps` → graphs (representations, BFS/DFS) `b1.graphs` →
+  sorting `b1.sorting` → recursion & divide-and-conquer `b1.recursion`.
   **Part 2 · engine theory** — each concept is pulled by a chess phase ahead of it, so its
   theory is banked before the code needs it. Take the next one not yet taught; the hand
   exercise is the 7-minute shape, still no Rust:
 
-  | Concept | Hand exercise (forward) | Inverted variant | For phase |
-  |---|---|---|---|
-  | bitboards & bit manipulation | mask/shift one rank, popcount by hand | give the mask that silently wraps to the wrong rank | 2 |
-  | game trees & minimax | score a 2-ply tree by hand | flip one leaf so the root's best move changes | 5 |
-  | alpha-beta pruning | prune that same tree, count the nodes saved | give the tree where alpha-beta prunes nothing | 5 |
-  | memoization vs tabulation | one recursion, two shapes | what memo key makes the cache return a wrong answer | 5 |
-  | iterative deepening | why re-searching from depth 1 is nearly free | what branching factor makes re-searching expensive | 5 |
-  | move ordering | why ordering multiplies pruning | the order that makes alpha-beta exactly as slow as minimax | 6 |
-  | Zobrist hashing | XOR one move in and out; why XOR, not sum | three ways to make the same position hash differently | 7 |
-  | transposition tables | collisions and replacement policy | three ways to make the TT return a wrong score | 7 |
+  | Concept | ID | Hand exercise (forward) | Inverted variant | For phase |
+  |---|---|---|---|---|
+  | bitboards & bit manipulation | `b1.bitboards` | mask/shift one rank, popcount by hand | give the mask that silently wraps to the wrong rank | 2 |
+  | game trees & minimax | `b1.minimax` | score a 2-ply tree by hand | flip one leaf so the root's best move changes | 5 |
+  | alpha-beta pruning | `b1.alpha-beta` | prune that same tree, count the nodes saved | give the tree where alpha-beta prunes nothing | 5 |
+  | memoization vs tabulation | `b1.memoization` | one recursion, two shapes | what memo key makes the cache return a wrong answer | 5 |
+  | iterative deepening | `b1.iterative-deepening` | why re-searching from depth 1 is nearly free | what branching factor makes re-searching expensive | 5 |
+  | move ordering | `b1.move-ordering` | why ordering multiplies pruning | the order that makes alpha-beta exactly as slow as minimax | 6 |
+  | Zobrist hashing | `b1.zobrist` | XOR one move in and out; why XOR, not sum | three ways to make the same position hash differently | 7 |
+  | transposition tables | `b1.transposition-tables` | collisions and replacement policy | three ways to make the TT return a wrong score | 7 |
 
   The third column is not a second concept — it is the same concept asked from the failure side,
   drawn on the days the table above assigns *Inverted*.
@@ -514,21 +535,21 @@ the detail.
   now **pulled by the engine, not fixed in advance** — build the structure the next chess
   phase needs:
 
-  | Structure | Built for | When |
-  |---|---|---|
-  | `ds::Vec` | move lists | chess phase 2 |
-  | `ds::Stack` | make/unmake undo | chess phase 3 |
-  | `ds::BinaryHeap` | move ordering | chess phase 6 |
-  | `ds::HashMap` | transposition table, repetition | chess phase 7 |
-  | `ds::Queue`, `ds::LinkedList`, `ds::BST`, `ds::Graph` | nothing in chess | Sunday, standalone |
+  | Structure | ID | Built for | When |
+  |---|---|---|---|
+  | `ds::Vec` | `ds.vec` | move lists | chess phase 2 |
+  | `ds::Stack` | `ds.stack` | make/unmake undo | chess phase 3 |
+  | `ds::BinaryHeap` | `ds.binary-heap` | move ordering | chess phase 6 |
+  | `ds::HashMap` | `ds.hashmap` | transposition table, repetition | chess phase 7 |
+  | `ds::Queue`, `ds::LinkedList`, `ds::BST`, `ds::Graph` | `ds.queue`, `ds.linked-list`, `ds.bst`, `ds.graph` | nothing in chess | Friday, standalone |
 
   Four of the eight are pulled in by the engine and get used by real code the same week they
-  are written. The other four have **no honest role in chess** and are built on Sundays
+  are written. The other four have **no honest role in chess** and are built on Fridays
   instead — inventing chess uses for them is exactly the busywork this redesign removed.
   B1's concept order still front-runs B2, so each structure's theory is banked before the
   phase that needs it. Source: <https://github.com/tayllan/awesome-algorithms>.
 
-**Sunday · Review day.** Sunday **replaces** the normal lesson — no new concept on either
+**Friday · Review day.** Friday **replaces** the normal lesson — no new concept on either
 track, same 15 minutes, same two headings so grading and `lesson-web.py` are unchanged. Its
 `title:` starts with `Review week N ·` so it's recognisable in `history`. The word budgets
 in step 3 apply unchanged.
@@ -544,35 +565,39 @@ in step 3 apply unchanged.
   Rust *or* DSA — both tracks are knowledge, and the title of each lesson carries both. Drop
   a slot the loop is too young to fill; never pad to five. Same collapsed worked answer below
   the block, same grading next run.
-- **Track A · Sunday is where the four non-chess structures get built.** This is the whole
-  reason `Queue`, `LinkedList`, `BST` and `Graph` still exist in the goal. One per Sunday,
+- **Track A · Friday is where the four non-chess structures get built.** This is the whole
+  reason `Queue`, `LinkedList`, `BST` and `Graph` still exist in the goal. One per Friday,
   in that order, once its B1 theory is banked and the Rust it needs is taught (`LinkedList`
   and `BST` want `Box`/`Option`, so they wait for `box1`). Same shape as a weekday chess
   step: the run writes the failing tests into `rust-dsa/src/ds/<name>.rs`, the owner writes
   the bodies, `cargo test` grades it. A structure too big for 8 minutes is **split across
-  consecutive Sundays** — `push` one week, `pop` and iteration the next — never crammed.
+  consecutive Fridays** — `push` one week, `pop` and iteration the next — never crammed.
 
   When none is due (theory not banked, prerequisite Rust not taught, or all four are done),
-  Sunday falls back to the old **review project**: `rust-dsa/tests/review_<YYYY_MM_DD>.rs`,
+  Friday falls back to the old **review project**: `rust-dsa/tests/review_<YYYY_MM_DD>.rs`,
   an integration test exercising a **due** concept from the ladder, not this week's — at
   stage B2 it drives the structures already shipped. `cargo test` already builds `tests/`, so
-  either shape grades with no extra plumbing. **On Sunday, Track A is graded on `cargo`, not
+  either shape grades with no extra plumbing. **On Friday, Track A is graded on `cargo`, not
   on `rustlings.done`** — rustlings doesn't move that day, there is no chess half, and
   neither is a skip.
-- **The ladder — every concept, not just the failures.** Spacing is derived, not stored:
-  **every lesson comes back at ~1 week, ~4 weeks and ~12 weeks after it was taught.** The
-  workflow hands over `due_review` — the lessons whose date falls in one of those windows,
-  each with its `title` and which rung it's on — so the run picks questions from the whole
-  body of knowledge, not from a list of mistakes. Nothing needs to be written down for a
-  concept that is simply being reviewed on time.
+- **The ladder — every concept, not just the failures.** `due_review` holds two kinds of
+  entry. `source: concept` is a concept with attempt records, due by its rung: it climbs
+  ~1 → ~4 → ~12 weeks **only** when answered `correct` with `help=none` as a `retrieval`;
+  anything else keeps its rung and restarts the clock, and an overdue concept stays due until
+  it is asked. `concepts[id].level` says where it stands — `practicing`, `demonstrated`,
+  `retained`, or `needs-repair` (was solid, now wrong). `source: lesson` is a lesson from
+  before attempt records existed, still on the old date ladder (~1, ~4, ~12 weeks after it was
+  taught). Nothing needs writing down for an item that is simply being reviewed on time.
 - **The wrong-answer queue is the exception list**, not the mechanism. Two deviations from
   the ladder, both recorded in *Current understanding*:
-  - **Wrong → sooner.** A question answered wrong (Sunday's or a weekday's) is appended to
-    *Review queue*, re-asked the very next Sunday, then removed — right or wrong — and it
+  - **Wrong → sooner.** A question answered wrong (Friday's or a weekday's) is appended to
+    *Review queue*, re-asked the very next Friday, then removed — right or wrong — and it
     keeps its normal place on the ladder regardless. Cap 3; oldest falls off.
+  - **Needs repair → queue.** A concept whose `level` is `needs-repair` joins *Review queue*
+    exactly like a wrong answer (same cap of 3).
   - **Right at 12 weeks → retired.** Add it to *Retired* and stop drawing it, so the ladder
     doesn't grow unbounded as the curriculum does.
-- **Report on Sunday** the same schema. A review day counts as `dsa_topics` unchanged (it
+- **Report on Friday** the same schema. A review day counts as `dsa_topics` unchanged (it
   teaches nothing new) and keeps the streak like any other day.
 
 **Code feedback on Track A.** The workflow hands over `reviewed_exercises` — every exercise

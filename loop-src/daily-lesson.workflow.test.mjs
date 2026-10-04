@@ -915,3 +915,27 @@ test('payload carries derived concepts, unknown IDs, parse errors, and a tagged 
   assert.ok(p.due_review.every((d) => d.source === 'concept' || d.source === 'lesson'));
   assert.equal(p.is_review_day, p.weekday === 'Friday');
 });
+
+test('the real brief registers IDs for every B1 part 2 concept, every ds:: structure and chess phases 0-8', async () => {
+  const { conceptIdsIn } = await loadEvidenceModule();
+  const brief = await fs.readFile(path.join(here, '..', 'loopany/daily-lesson/README.md'), 'utf8');
+  const ids = conceptIdsIn(brief);
+  const expected = [
+    'b1.bitboards', 'b1.minimax', 'b1.alpha-beta', 'b1.memoization', 'b1.iterative-deepening',
+    'b1.move-ordering', 'b1.zobrist', 'b1.transposition-tables',
+    'b1.big-o', 'b1.arrays', 'b1.linked-lists', 'b1.stacks', 'b1.queues', 'b1.hashing',
+    'b1.trees-bst', 'b1.heaps', 'b1.graphs', 'b1.sorting', 'b1.recursion',
+    'ds.vec', 'ds.stack', 'ds.binary-heap', 'ds.hashmap', 'ds.queue', 'ds.linked-list', 'ds.bst', 'ds.graph',
+    ...Array.from({ length: 9 }, (_, n) => `chess.p${n}`),
+  ];
+  assert.deepEqual(expected.filter((id) => !ids.has(id)), []);
+});
+
+test('the prompt names Friday and the new payload keys, and no longer says Sunday', async () => {
+  const src = await fs.readFile(SRC, 'utf8');
+  const prompt = src.slice(src.indexOf('await agent('));
+  for (const s of ['FRIDAY', 'concepts', 'unknown_ids', 'attempt_parse_errors', 'needs-repair', 'Attempt records']) {
+    assert.ok(prompt.includes(s), `prompt is missing ${s}`);
+  }
+  assert.ok(!/Sunday|SUNDAY/.test(prompt), 'prompt still mentions Sunday');
+});

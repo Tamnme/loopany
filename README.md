@@ -13,7 +13,7 @@ The lesson loop finishes itself when `rust-dsa` plays legal chess — perft-veri
 a transposition table, and a terminal binary to play a full game against — built on hand-written
 `ds::` structures rather than std's. (Until 2026-08-09 the finish line was an abstract
 8-structure library; the brief records why chess replaced it. Five of the eight structures are
-still earned along the way, the rest on Sundays.)
+still earned along the way, the rest on Fridays.)
 
 ## How a run works
 
@@ -53,10 +53,10 @@ hand-edited source.
 ## Working on the workflow
 
 ```bash
-cd loop-src && node --test          # 33 tests, all offline except cargo/clippy
+cd loop-src && node --test          # 58 tests, all offline except cargo/clippy
 ```
 
-**As of 2026-08-12, 3 of the 33 fail on a clock, not a regression** — see the fixture bullet
+**As of 2026-08-12, 3 of the tests (now 3 of 58) fail on a clock, not a regression** — see the fixture bullet
 below. Compare against that baseline before assuming you broke something.
 
 Deploy only through the dry-run gate — the loop fires unattended, and a broken workflow costs a

@@ -16,6 +16,8 @@ lesson day. The briefs (`loopany/*/README.md`) need no push; they sync on the ne
 ## Hard rules
 
 - **Never write inside `loopany/`** — synced content. No `cargo`, no build output, no checkouts.
+  The one exception is the briefs (`loopany/*/README.md`): they are the loops' contracts and are
+  edited here like source.
 - **Never touch mtimes under `rustlings/exercises/`** — they decide which exercises get reviewed.
 - **Absolute paths only** in workflow code. Runs start in an unrelated empty directory.
 - **The loopany host kills the whole workflow at 30s.** Every external call is budgeted from
@@ -27,10 +29,17 @@ lesson day. The briefs (`loopany/*/README.md`) need no push; they sync on the ne
 
 ## Notes from real breakage
 
-- **2026-08-12 — 3 of the 33 tests fail on the wall clock, not a regression.** The selection
+- **2026-08-12 — 3 tests fail on the wall clock, not a regression.** The selection
   fixture stamps exercise mtimes at hardcoded `2026-08-05`…`08-13` while recreating the cutoff
   lesson for a *live* birthtime, so the qualifying pool is now always empty. Compare against
-  30/3 before assuming you broke something; fix by restamping relative to `Date.now()`.
+  55/3 (of 58) before assuming you broke something; fix by restamping relative to `Date.now()`.
+- **2026-10-04 — the deployed workflow is the source of truth, not `main`.** The live loop ran an
+  unmerged commit (`ab16034`, the hold gate) plus edits made in place on the server and committed
+  nowhere; a branch built on `main` would have deleted both on apply. Before changing the
+  workflow, `loopany show <loop-id> --json` and `/usr/bin/diff` its `workflow` against
+  `loop-src/` — a dry-run's char counts are the only other hint. And because the loop reads the
+  brief from this checkout, **merge and apply in one sitting**: a merged brief under an unapplied
+  workflow disagrees on the review day.
 - **2026-08-27 — don't key a boolean on an exit code when non-zero is the expected state.**
   `cargo.ok` was `exit === 0`, but every weekday the run writes a deliberately-failing `todo!()`
   test, so the grading data read UNKNOWN on *every* run for the whole chess track. `ok` now means

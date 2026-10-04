@@ -209,9 +209,11 @@ Never run `cargo`, `rustlings`, or create a checkout inside `loopany/`.
    `### My answer`. `help` is `hint` only when the concept was re-**taught** before this
    attempt — held, repeated after a skip, or shrunk; otherwise `none`, including a first serve.
    A review-day or ladder re-ask is **always** `help=none`: it is a retrieval, not help.
-   `kind` is `retrieval` on review day or a ladder re-ask, otherwise `application`. On a review
-   day, copy each `id` from the `(id: …)` written next to its question (see *Friday · Review
-   day*) — never infer it. A skipped track writes **no** line — no attempt is not an
+   `kind` is `retrieval` when the lesson being graded was a review-day lesson or a ladder
+   re-ask, otherwise `application` — it is the graded lesson that decides, not today's weekday.
+   When grading a review-day lesson, copy each `id` from the `(id: …)` written next to its
+   question (see *Friday · Review day*) — never infer it. A question with no `(id: …)` writes
+   no attempt line. A skipped track writes **no** line — no attempt is not an
    `incorrect`. Never edit an older lesson's attempts. The workflow derives each concept's
    level from these.
 2. **Friday?** Then skip to the *Friday · Review day* section — no new concepts today, and no
@@ -570,10 +572,11 @@ in step 3 apply unchanged.
   Rust *or* DSA — both tracks are knowledge, and the title of each lesson carries both. Drop
   a slot the loop is too young to fill; never pad to five. Same collapsed worked answer below
   the block, same grading next run. **Write each question's concept ID next to it**, e.g.
-  `(id: b1.zobrist)`. For a `source: lesson` entry whose title names no single registered
-  concept, use this brief's registered ID for its DSA concept; never invent `rs.<topic>` IDs
-  (rustlings IDs are exercise names only). Grading copies the IDs from the questions — it
-  never infers them.
+  `(id: b1.zobrist)`. A DSA question drawn from a `source: lesson` entry takes this brief's
+  registered ID for that DSA concept. A question whose concept has **no** registered ID — a
+  Rust topic that is not a rustlings exercise name, or a prose queue item — gets **no**
+  `(id: …)`: never borrow another concept's ID and never invent `rs.<topic>` (rustlings IDs
+  are exercise names only). Grading copies the IDs from the questions — it never infers them.
 - **Track A · Friday is where the four non-chess structures get built.** This is the whole
   reason `Queue`, `LinkedList`, `BST` and `Graph` still exist in the goal. One per Friday,
   in that order, once its B1 theory is banked and the Rust it needs is taught (`LinkedList`

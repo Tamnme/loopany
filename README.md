@@ -53,10 +53,10 @@ hand-edited source.
 ## Working on the workflow
 
 ```bash
-cd loop-src && node --test          # 58 tests, all offline except cargo/clippy
+cd loop-src && node --test          # 62 tests, all offline except cargo/clippy
 ```
 
-**As of 2026-08-12, 3 of the tests (now 3 of 58) fail on a clock, not a regression** — see the fixture bullet
+**As of 2026-08-12, 3 of the tests (now 3 of 62) fail on a clock, not a regression** — see the fixture bullet
 below. Compare against that baseline before assuming you broke something.
 
 Deploy only through the dry-run gate — the loop fires unattended, and a broken workflow costs a

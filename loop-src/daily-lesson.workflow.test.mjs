@@ -863,7 +863,7 @@ async function loadEvidenceModule() {
   if (start === -1 || end === -1) {
     throw new Error('Could not locate the evidence-levels block in the workflow source');
   }
-  const wrapped = `${body.slice(start, end)}\nexport { REVIEW_DAY, RUNGS, parseAttempts, deriveConcepts, lessonLadder, conceptLadder, conceptIdsIn, unknownIdsOf, isReviewDayOn };\n`;
+  const wrapped = `${body.slice(start, end)}\nexport { REVIEW_DAY, RUNGS, parseAttempts, deriveConcepts, lessonLadder, conceptLadder, conceptIdsIn, unknownIdsOf, isReviewDayOn, isReviewLesson, questionIdsOf, reviewIdMismatchesOf };\n`;
   const tmp = path.join(here, `.wf.evidence.harness.${Date.now()}.${Math.random().toString(36).slice(2)}.mjs`);
   await fs.writeFile(tmp, wrapped);
   try {
@@ -1146,7 +1146,7 @@ test('the prompt names Friday and the new payload keys, and no longer says Sunda
   const src = await fs.readFile(SRC, 'utf8');
   assert.ok(src.search(/^await agent\(/m) > 0, 'could not find the agent call');
   const prompt = src.slice(src.search(/^await agent\(/m));
-  for (const s of ['FRIDAY', 'concepts', 'unknown_ids', 'attempt_parse_errors', 'needs-repair', 'Attempt records']) {
+  for (const s of ['FRIDAY', 'concepts', 'unknown_ids', 'attempt_parse_errors', 'needs-repair', 'Attempt records', 'question_ids', 'review_id_mismatches']) {
     assert.ok(prompt.includes(s), `prompt is missing ${s}`);
   }
   assert.ok(!/Sunday|SUNDAY/.test(prompt), 'prompt still mentions Sunday');
@@ -1187,4 +1187,40 @@ test('the prompt orders concept entries most-overdue-first and names lesson entr
     assert.ok(prompt.includes(s), `prompt is missing ${s}`);
   }
   assert.ok(!prompt.includes('lessons from before attempt records existed'), 'old wording still present');
+});
+
+test('isReviewLesson: Friday by date, old Sunday reviews by title, never throws', async () => {
+  const { isReviewLesson } = await loadEvidenceModule();
+  const tz = { timeZone: 'Asia/Ho_Chi_Minh' };
+  assert.equal(isReviewLesson('2026-10-09', '"Lesson 53 · …"', tz), true, 'a Friday');
+  assert.equal(isReviewLesson('2026-09-13', '"Review week 6 · Rust + DSA"', tz), true, 'a pre-cutover Sunday review, by title');
+  assert.equal(isReviewLesson('2026-10-11', '"Lesson 54 · …"', tz), false, 'Sunday is a normal day now');
+  assert.equal(isReviewLesson('2026-13-45', null, tz), false, 'impossible date: false, no throw');
+});
+
+test('questionIdsOf: tags in order, de-duplicated, registered namespaces only', async () => {
+  const { questionIdsOf } = await loadEvidenceModule();
+  const text = '**Q1** (id: rs.errors4) …\n**Q2** (id:b1.zobrist) …\n**Q3** (id: foo.bar) …\n**Q4** no tag\n'
+    + 'worked: Q1 (id: rs.errors4)\n';
+  assert.deepEqual(questionIdsOf(text), ['rs.errors4', 'b1.zobrist']);
+});
+
+test('reviewIdMismatchesOf flags a retrieval whose id was not a question tag, only on review lessons', async () => {
+  const { reviewIdMismatchesOf } = await loadEvidenceModule();
+  const tz = { timeZone: 'Asia/Ho_Chi_Minh' };
+  const text = '**Q1** (id: rs.errors4) …\n**Q2** (id: b1.zobrist) …\n';
+  const attempts = [
+    { id: 'rs.errors4', result: 'correct', help: 'none', kind: 'retrieval' },
+    { id: 'b1.alpha-beta', result: 'correct', help: 'none', kind: 'retrieval' },
+    { id: 'ds.graph', result: 'partial', help: 'none', kind: 'application' },
+  ];
+  assert.deepEqual(reviewIdMismatchesOf('2026-10-09', '"Lesson 53"', text, attempts, tz), [{ date: '2026-10-09', id: 'b1.alpha-beta' }]);
+  assert.deepEqual(reviewIdMismatchesOf('2026-10-08', '"Lesson 52"', text, attempts, tz), [], 'not a review lesson');
+});
+
+test('payload hands the grading run is_review_day, question_ids and review_id_mismatches', async () => {
+  const p = await runWorkflow();
+  assert.equal(typeof p.prev_lesson.is_review_day, 'boolean');
+  assert.ok(Array.isArray(p.prev_lesson.question_ids));
+  assert.ok(Array.isArray(p.review_id_mismatches));
 });

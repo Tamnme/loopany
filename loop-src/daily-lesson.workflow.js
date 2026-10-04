@@ -169,6 +169,28 @@ const unknownIdsOf = (concepts, readme, binNames) => {
     (id) => !known.has(id) && !(id.startsWith('rs.') && binNames.includes(id.slice(3))),
   );
 };
+// A lesson is a review-day lesson if its title says so (`Review week N ·`) or its date fell on
+// REVIEW_DAY. The title matters: review lessons before 2026-10-04 were Sundays. Noon UTC is the
+// same calendar day in Asia/Ho_Chi_Minh, so the weekday is read in the owner's zone.
+const isReviewLesson = (date, title, tz) =>
+  /^"?Review week/.test(title || '') ||
+  (isDate(date) && isReviewDayOn(new Date(date + 'T12:00:00Z'), tz));
+
+// The `(id: …)` tags a review-day run writes next to each question, in order, de-duplicated.
+// Only registered namespaces count — anything else is not an ID.
+const questionIdsOf = (text) => [
+  ...new Set([...text.matchAll(/\(id:\s*((?:rs|b1|chess|ds)\.[a-z0-9_-]+)\s*\)/g)].map((m) => m[1])),
+];
+
+// Retrieval attempts on a review-day lesson whose id is not one of that lesson's question tags —
+// the grading run inferred an ID instead of copying it.
+const reviewIdMismatchesOf = (date, title, text, attempts, tz) => {
+  if (!isReviewLesson(date, title, tz)) return [];
+  const tagged = new Set(questionIdsOf(text));
+  return attempts
+    .filter((a) => a.kind === 'retrieval' && !tagged.has(a.id))
+    .map((a) => ({ date, id: a.id }));
+};
 // End evidence levels.
 
 // Today in the owner's timezone. The run fires at 09:00 Asia/Saigon (cron `0 9 * * *`);
@@ -228,12 +250,14 @@ if (files.includes(today + '.md')) {
 const history = [];
 const attemptRecords = [];
 const attemptParseErrors = [];
+const reviewIdMismatches = [];
 const datesWithAttempts = new Set();
 for (const f of files) {
   const text = await fs.readFile(lessonsDir + '/' + f, 'utf8');
   const date = f.replace('.md', '');
   history.push({ date, type: typeOf(text), title: titleOf(text) });
   const parsed = parseAttempts(text);
+  reviewIdMismatches.push(...reviewIdMismatchesOf(date, titleOf(text), text, parsed.attempts, tz));
   // Only real records move a lesson off the date ladder — an empty or all-malformed list would
   // otherwise drop it from review with nothing on the concept ladder to replace it.
   if (parsed.attempts.length > 0) datesWithAttempts.add(date);
@@ -268,6 +292,8 @@ if (prevName) {
     type: typeOf(text),
     track_b_answer: answerOf(text), // empty string = owner never filled it in = B skipped
     metrics: metricsOf(text), // null = the line is missing; the agent must write one today
+    is_review_day: isReviewLesson(prevName.replace('.md', ''), titleOf(text), tz),
+    question_ids: questionIdsOf(text),
     text,
   };
 }
@@ -893,7 +919,7 @@ await agent(
     'history carries each lesson\'s title, so build the test from those titles rather than re-reading the week. ' +
     'due_review is the spaced-repetition ladder already computed. Entries with source \'concept\' come from attempt records — concepts[id] holds that concept\'s level (practicing, demonstrated, retained, needs-repair), rung and due date, and they are sorted by due — take the most overdue first; entries with source \'lesson\' are lessons without attempt records, still on the old ~1w/~4w/~12w date ladder, already deduped so a stretch of held copies collapses to the one day that topic was actually served. ' +
     'Draw the older questions and the small project from both, preferring \'lesson\' entries whose type is done|partial: a `skipped` entry was served into an empty room and never learned, so asking it as recall asks for something never seen — teach it fresh or take the next candidate instead. Drop a slot rather than padding. The task file\'s Review queue is the exception list layered on top — a concept whose level is needs-repair goes into it like a wrong answer — and Retired items are dropped from the draw. ' +
-    'When you grade prev_lesson, write its attempts: front-matter exactly as the brief\'s "Attempt records" paragraph says. unknown_ids lists attempt IDs the brief does not register — name them in your report (null means the brief was unreadable, so the check did not run); attempt_parse_errors lists record lines that did not parse — name them, never rewrite an older lesson. ' +
+    'When you grade prev_lesson, write its attempts: front-matter exactly as the brief\'s "Attempt records" paragraph says. prev_lesson.is_review_day says whether the lesson you are grading was a review-day lesson — it decides kind=retrieval, not today\'s weekday; prev_lesson.question_ids are the (id: …) tags its questions carry — copy those IDs, never infer one, and a question with no tag writes no line. review_id_mismatches lists retrieval attempts on review-day lessons whose id was not among that lesson\'s tags — name them in your report. unknown_ids lists attempt IDs the brief does not register — name them in your report (null means the brief was unreadable, so the check did not run); attempt_parse_errors lists record lines that did not parse — name them, never rewrite an older lesson. ' +
     'rustlings.next_exercises is the ordered slice of exercises starting AT current_exercise, straight from Cargo.toml\'s bin list (the authoritative exercise order, quizzes included), each with its path and source text. Size today\'s Track A step off it and quote its "done when" from it — never go grep the manifest or cat the sources, and never infer the order from section directory names, which is what mis-assigned lesson 5. Empty means the state file and manifest disagree: then, and only then, check the bin list yourself. ' +
     "rust_dsa is the chess crate itself — every .rs under src/ and tests/ with its path and full text, plus Cargo.toml. Write today's failing test straight into it and register any new module in the src/lib.rs text given here; never `ls -R`, `cat` or re-Read the crate to orient first. A file with truncated:true was clipped at 8KB (bytes is its real size) — Read only that one if you need its tail. Empty means the crate is unreadable: then, and only then, look yourself. " +
     "rust_dsa.owner_touched says whether the owner opened the crate at all since the last lesson (touched_paths names the files); your own edits are excluded by construction, so false with a red chess test means the step was never ATTEMPTED, not that it was too big. It is the trigger for the brief's \"The chess half is untouched, not too big\" rule — do not shrink or re-serve a step nobody opened. Write the crate edit BEFORE the lesson file, per the brief's step order, or you poison tomorrow's flag. " +
@@ -909,6 +935,7 @@ await agent(
     concepts,
     unknown_ids: unknownIds,
     attempt_parse_errors: attemptParseErrors,
+    review_id_mismatches: reviewIdMismatches,
     prev_lesson: prevLesson,
     history,
     streak_before_prev: streakBeforePrev,

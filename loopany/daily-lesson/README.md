@@ -212,7 +212,8 @@ Never run `cargo`, `rustlings`, or create a checkout inside `loopany/`.
    `kind` is `retrieval` when the lesson being graded was a review-day lesson or a ladder
    re-ask, otherwise `application` — it is the graded lesson that decides, not today's weekday.
    When grading a review-day lesson, copy each `id` from the `(id: …)` written next to its
-   question (see *Friday · Review day*) — never infer it. A question with no `(id: …)` writes
+   question (see *Friday · Review day*) — never infer it. The workflow hands both facts over: `prev_lesson.is_review_day` and
+   `prev_lesson.question_ids`. A question with no `(id: …)` writes
    no attempt line. A skipped track writes **no** line — no attempt is not an
    `incorrect`. Never edit an older lesson's attempts. The workflow derives each concept's
    level from these.

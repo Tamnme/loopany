@@ -6,7 +6,7 @@ things that bite.
 ## Commands
 
 ```bash
-cd loop-src && node --test        # 58 tests. Baseline is 55 pass / 3 fail (see below), not 58/0.
+cd loop-src && node --test        # 62 tests. Baseline is 59 pass / 3 fail (see below), not 62/0.
 npx @crewlet/loopany@latest edit <loop-id> --workflow-file daily-lesson.workflow.js --dry-run
 ```
 
@@ -32,7 +32,7 @@ lesson day. The briefs (`loopany/*/README.md`) need no push; they sync on the ne
 - **2026-08-12 — 3 tests fail on the wall clock, not a regression.** The selection
   fixture stamps exercise mtimes at hardcoded `2026-08-05`…`08-13` while recreating the cutoff
   lesson for a *live* birthtime, so the qualifying pool is now always empty. Compare against
-  55/3 (of 58) before assuming you broke something; fix by restamping relative to `Date.now()`.
+  59/3 (of 62) before assuming you broke something; fix by restamping relative to `Date.now()`.
 - **2026-10-04 — the deployed workflow is the source of truth, not `main`.** The live loop ran an
   unmerged commit (`ab16034`, the hold gate) plus edits made in place on the server and committed
   nowhere; a branch built on `main` would have deleted both on apply. Before changing the

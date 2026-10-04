@@ -1,5 +1,28 @@
 # Rust + DSA — Daily Lesson
 
+> **Reading this file — don't `cat` it.** It is ~70 KB, so a single `cat` overflows the Bash
+> tool's output budget, gets persisted to a scratch path, and the run then re-reads it in five
+> or six chunks anyway. Runs 45 and 46 each spent **7–9 tool calls** doing exactly that before
+> touching any work. Read it in these five targeted passes instead — each one fits in a single
+> Bash result, and they are in priority order, so a run short on time can stop after pass 3:
+>
+> ```bash
+> cd /Users/tamnm/code/personal/loopany/daily-lesson
+> # 1. state — read this FIRST, it is what changed since yesterday (~22 KB)
+> /usr/bin/sed -n '/^## Current understanding/,/^## Timeline/p' README.md
+> # 2. the contracts: mission, tracks, chess roadmap (~10 KB)
+> /usr/bin/sed -n '/^## Spec/,/^\*\*Each run, in order:\*\*/p' README.md
+> # 3. the run procedure, steps 1–7 (~23 KB)
+> /usr/bin/sed -n '/^\*\*Each run, in order:\*\*/,/^\*\*Curriculum\.\*\*/p' README.md
+> # 4. curriculum + Sunday + code-feedback tables (~9 KB)
+> /usr/bin/sed -n '/^\*\*Curriculum\.\*\*/,/^## Current understanding/p' README.md
+> # 5. recent history only — the older spine is almost never worth reading
+> /usr/bin/awk 'f;/^## Timeline/{f=1}' README.md | /usr/bin/tail -40
+> ```
+>
+> The Timeline's older stretch is a condensed spine and is almost never worth reading; every
+> durable finding from it has been folded up into *Current understanding*.
+
 ## Spec
 
 **Mission.** Take the owner from Rust foundations to a **working chess engine** in Rust, 15
@@ -14,6 +37,10 @@ boring — nothing written on any day survived to the next, and B2's `generics2`
 `structs_done` at 0 for 11 lessons. Chess is reachable **now**, gives every rustlings concept
 somewhere to be spent the same day, and genuinely needs five of the eight structures, so the
 DSA goal is kept. The complaint was *boring, not too hard* — difficulty is unchanged.
+
+**Waitzkin practice contract.** Every lesson is process-first: one smaller-circle fundamental per track, deliberate exposure to a named failure or invariant, and 3–5 Socratic grill questions tied to the day’s exact concepts. On repeats and review days, prefer investment-in-loss prompts that construct the breaking input or symptom. A short optional timer, distraction, or recovery breath may train the soft zone, but compiler and test evidence remain authoritative.
+
+**Feynman–Munger grilling contract.** Teach for understanding, not recall: demand a plain explanation, the mechanism, observable evidence, uncertainty, and a test that could prove the answer wrong. Distrust jargon that hides weak understanding and treat “I don’t know” as the start of inquiry. For every grill, apply Munger’s rule—**invert, always invert**—by asking how the implementation, invariant, or reasoning would fail before asking how it succeeds.
 
 **The 15-minute split — two tracks, one file, every day.**
 
@@ -257,15 +284,24 @@ Never run `cargo`, `rustlings`, or create a checkout inside `loopany/`.
    `presence.any` (and `presence.signals`); don't re-derive it from the underlying arrays, and
    don't restate the test in prose. Re-ask at most once, on the next day with presence.
 
-   **The open question and its fallback (raised 2026-08-24).** Does `rust-dsa` belong in the
-   daily 15 minutes, or should weekdays be rustlings + theory with all crate work on Sundays?
-   Ask it per the rule above. If it resolves either way, or resolves by presence-with-silence,
-   apply the answer and record it in *Current understanding*. If the answer is *move it*, the
-   shape is: weekday Track A = **2 rustlings exercises for the full ~8 minutes, no chess half**;
-   Sunday's Track A carries **all** `cargo`-crate work, chess step and `ds::` structure both,
-   alternating so neither starves. That slows the chess roadmap and makes the goal's timeline
-   the owner's choice rather than the loop's — note it plainly and keep running. **Never call
-   `loopany finish` over it**; a goal that got slower is not a goal that was met.
+   **The crate question is CLOSED (2026-09-21) — weekday chess stays, and a run of
+   `crate_touched: 0` is a GAP, never a decision.** The question was whether `rust-dsa` belongs
+   in the daily 15 or only on Sundays. It was asked into empty rooms (08-24), re-asked as lesson
+   26's Q1 (08-27) and never answered — and twice the loop read that silence plus a long run of
+   `crate_touched: 0` as consent and moved crate work off weekdays (08-27, then 09-19, the second
+   one applied in full). **Both readings were wrong.** On 09-21 the owner opened
+   `src/chess/board.rs` and turned `board_rank_line` green *with no lesson asking for it*, over a
+   weekend whose Sunday run had failed so no crate slot existed at all. Hands beat silence. So:
+   - **Don't re-ask it.** It has been answered from both directions and settled. A third ask
+     spends Q1's slot re-litigating a closed question.
+   - **Don't re-derive the fallback from zeros.** `crate_touched: 0` for a week, or for 38 days,
+     is the owner working in bursts — it is *absence*, which the *Absence, not difficulty* rule
+     already covers, and absence is never evidence about what they want. Only an answer in the
+     box, or hands in the crate, is evidence.
+   - **The right lever when the crate goes quiet is a step that survives a gap**, not a new
+     schedule. Hold the step, don't shrink it, don't move it to another day.
+   - **Never call `loopany finish` over any of this**; a goal that got slower is not a goal
+     that was met.
 
    **A concept is re-taught at most three times, then parked.** Re-teaching without a cap
    freezes the curriculum forever — bitboards ran four times, phase 1 sat five days. On the
@@ -412,8 +448,22 @@ Never run `cargo`, `rustlings`, or create a checkout inside `loopany/`.
 
 **Front-matter convention.** Every lesson file opens with flat scalars only:
 `type:` one of exactly `assigned` | `partial` | `done` | `skipped` (the stage, nothing
-else), `title:` both topics in one line, `date:` `YYYY-MM-DD`. The dashboard board keys its
-columns on that vocabulary — never invent a fifth value, never add a `status:` field.
+else), `title:` both topics in one line, `date:` `YYYY-MM-DD`, and `metrics:`. The dashboard
+board keys its columns on the `type` vocabulary — never invent a fifth value, never add a
+`status:` field.
+
+**`metrics:` is mandatory and load-bearing — a lesson without it costs the loop ~$1.50.**
+The line is `metrics: day=<n> chess_phase=<n> dsa_topics=<n> structs_done=<n>` — the same four
+cumulative numbers you `loopany report --state`, written into the file you are issuing today.
+It is the **only** store for them: none is derivable from disk, and the host cursor cannot hold
+them (the workflow's escalation path returns no state, so `prev` is always undefined — see
+`metricsOf` in the workflow for why that can't be fixed without risking a real day's metrics).
+The no-agent **hold path** reads this line to carry the numbers forward, and **declines
+outright when it is missing or unparseable**, waking a full agent run instead. That path
+carried five weekdays at **$0** during the 09-12…09-17 absence; one forgotten line turns the
+next absent day back into a paid run. Take each value from `prev_lesson.metrics` (already
+parsed for you) and add today's increment. Never report or write a value below the previous
+day's.
 
 **When to speak.** `notify: always` — this is a lesson, not a monitor; silence means an
 unread lesson. The message is the notification the owner actually sees, so keep it to one
@@ -559,46 +609,54 @@ block at the top of `## Track A · Rust`, above today's assignment, inside its 2
 
 ## Current understanding
 
-- **Position (2026-08-27, lesson 26). THE OWNER IS BACK — `presence.any` true after four empty
-  rooms.** Signals: `reviewed_exercises` (`options2`) and `owner_modified` on `options3`. Lesson 25
-  graded **partial**: Track B ✓ (answered, Q1 arithmetic right, Q2 ranking wrong) and Track A ✗ on
-  a technicality — `options3` carries a **correct** `Some(ref p)` that the watcher never executed,
-  so it is presence, not a miss. Streak **1**, `consecutive_skips` back to **0**; the *Absence*
-  rule is off. Track A: `rustlings.done` **49/94**, today `options3` + `errors1` at the full
-  two-exercise setpoint (the landed half went straight back up, no cold-start floor). Chess
-  **phase 1, still blocked on the owner** — `owner_touched` false a **ninth** day, `board_rank_line`
-  red, cargo 7 passing / 3 failing unchanged, **no chess half and no crate edit for the fourth day**.
-  `ds::Queue::pop` still `todo!()`. Track B: **stage B1, part 2**, **rotated forward on the return
-  day** — move ordering is now taught *and passed*, so `dsa_topics` **15**, and today serves
-  **Zobrist hashing** (first serve → forward form). `structs_done: 0`. 919 words, no trim pass.
-- **B1 part 2 has ONE concept left after today.** Taught and passed: bitboards, minimax,
-  alpha-beta, **move ordering (08-26, answered on the return day)**. Parked to *Review queue*:
-  memoization vs tabulation. **Served once into an empty room and rotated past, never read:
-  iterative deepening (08-25).** Serving Zobrist today leaves only **transposition tables** — so
-  Track B runs dry in two days and the next run must decide what follows part 2. The obvious
-  candidate is **iterative deepening**, which was rotated past unread and is genuinely untaught;
-  it was skipped today only because the Spec's *return day is a fresh start, not a retry* forbids
-  opening a comeback on the abandoned concept. Draw it once part 2 closes, or extend the table.
-- **The Q1 crate question was RE-ASKED TODAY (08-27) — the first day with presence since it was
-  raised.** Lesson 23 asked the A/B choice (daily crate vs Sundays-only) into three consecutive
-  empty rooms (08-24/25/26), which per the Spec is not a decision and is why it was never treated
-  as resolved. It is now Q1 of lesson 26's `### My answer`, one re-ask as the rule allows. **The
-  next run applies whatever comes back, including presence-with-silence** — a blank Q1 on a day
-  with presence *is* the answer, and the fallback shape (weekdays = 2 rustlings + theory, all crate
-  work on Sunday) is written into the Spec. Do not re-ask a third time. Note the deliberate
-  sequencing: no chess step was served today *because* the question was on the table — shipping one
-  would have pre-empted the answer it asks for.
-- **A weekday with no chess half is now a real, rule-derived state — not a lapse.** 08-24 is the
-  first one: the *untouched, not too big* rule's own clause ("give those ~4 minutes back to the
-  rustlings half until the owner opens the crate once") means the phase-blocked case ships
-  rustlings-only. Consequence worth remembering: with no run-authored crate edit, tomorrow's
-  `owner_touched` is a **pure** owner signal with nothing to filter out.
+- **Position (2026-10-01, lesson 50).** `presence.any` false, `gap_days` 0. Lesson 49 graded
+  **skipped**; streak 0, `consecutive_skips` now **3**, so the **_Absence_ rule is live**: hold
+  everything at its current size and don't shrink. On the first day with presence, rotate
+  Track B forward to **Zobrist (inverted)** instead of serving iterative deepening a fourth
+  time. Held: `errors4`+`errors5` (gate), `board_render` (standing one-liner, not the gate),
+  iterative deepening inverted with the same Qs. No crate edit. 652 words. **Sunday 10-04
+  serves `ds::Graph`** (overdue, two `todo!()` bodies). Last presence was 09-25 (`errors4`
+  `value > 0?;`, doesn't compile). Crate: 10 pass / 3 fail (`board_render` + Graph's two).
+- **The owner may use today's answer box for an older lesson's questions.** 09-21's box held
+  09-19's TT answers. Before grading a box against its own questions, check whether it answers a
+  previous lesson's — and grade what it actually answers.
+- **THE FALLBACK IS REVERSED — weekday chess is back, and the reversal is behavioural, not a
+  redesign.** Two days after lesson 45 concluded "presence-with-silence = move all crate work
+  to Sunday", the owner opened `src/chess/board.rs` and made `board_rank_line` green — with
+  **no lesson asking for it**, on a weekend whose Sunday run failed so no crate slot was ever
+  served. That is the strongest possible refutation of "the crate is not chosen": they chose
+  it unasked. Consequences, all of them live:
+  - **Phase 1 is unblocked.** The *untouched, not too big* rule blocked it on "until the owner
+    opens the crate once". They have. The run may write the next failing test (it did:
+    `board_render`) — but the one-run-written-body-per-phase budget for phase 1 is still spent,
+    so **still don't write bodies**.
+  - **Don't re-ask the crate Q1.** It has now been answered twice — by silence in one
+    direction and by hands in the other, and hands win. Asking a third time spends Q1's slot
+    re-litigating something settled.
+  - **Read `crate_touched`, not the calendar, and don't infer abandonment from a run of
+    zeros again.** 38 days of `crate_touched: 0` produced a confident, wrong conclusion on
+    09-19. The owner works in bursts with long gaps; a gap is not a decision, and the loop
+    read one as a decision twice (08-27 → 09-19) in the same direction.
+  - The **2026-10-05 check** (did a Sunday slot get opened?) is **moot** — answered early, in
+    the wrong column: a *weekend* slot nobody offered got opened. Replace it with: **2026-10-05
+    — has a run-written chess test gone green under the restored weekday shape?** If
+    `board_render` and its successors land, the daily chess half works and the 09-19
+    conclusion was purely a reading error. If the crate goes quiet again for a week, the real
+    pattern is burst-work, and the right lever is a step that survives a gap, not a schedule.
+- **B1 part 2 IS SPENT — the next serve must come from the extension, not the table.** All eight
+  concepts in the Spec's part-2 table have been served: bitboards, minimax, alpha-beta and move
+  ordering taught and passed; memoization vs tabulation parked to *Review queue*; transposition
+  tables served 09-19 and answered late in 09-21's box (passed); iterative deepening served
+  09-21 (unanswered) and re-served inverted 09-25. **Zobrist is the one exception worth re-serving** — five serves 09-14…09-18 but
+  only the last into a non-empty room, so by the read-serves-only park rule it has **one** read
+  serve, never answered. Order from here: **Zobrist (inverted)**, then extend the table with the
+  phase 5+ theory the roadmap still needs — quiescence search, eval terms, repetition detection.
 - **A Sunday structure can rot as quietly as a chess step — check `cargo`, not the calendar.**
-  `Queue` was assigned 08-16 and was still three `todo!()` bodies on 08-23, a full week later,
-  because the only Sunday in between was the one that assigned it. Its first miss, so the
-  *untouched* rule doesn't fire yet — the response was the ordinary shrink: the run wrote the two
-  bodies that teach nothing (`push`, `len`) and left `pop`, the one carrying the idea (`Option` +
-  `Vec::remove`). If it misses again, write `pop` and move to `Graph`.
+  `Queue` sat as three `todo!()` bodies from 08-16 to 08-23 because the only Sunday between was
+  the one that assigned it. The run wrote `push`/`len` (which teach nothing) and left `pop` (the
+  idea: `Option` + `Vec::remove`). **`ds::Graph` is the one now overdue** — two `todo!()` bodies,
+  assigned review week 6, red ever since; the 09-20 and 09-27 Sunday runs both failed, so it was
+  never re-served. It is what's due on **2026-10-04**.
 - **A correct exercise can sit outside `rustlings.done` — the watcher has to run it.** Rustlings
   records an exercise only when its watcher executes it; writing the file is not enough (08-22:
   `quiz2` complete and correct, still not `done`). That is presence, not a miss — the
@@ -607,24 +665,15 @@ block at the top of `## Track A · Rust`, above today's assignment, inside its 2
   `hashmaps2` `fruit_basket` was correct; the exercise failed because `main` passed the map by
   value to a `&mut` parameter. A nearly-finished attempt is invisible in `reviewed_exercises`
   (which needs `done`) — **look at `next_exercises[0].code` when a half misses.**
-- **The crate is not too big and not badly delivered — it is not chosen. Every rival hypothesis is
-  refuted, and the loop must stop re-testing them.** The owner has not opened `rust-dsa` since
-  **2026-08-12**; every `.rs` in it carries a *run's* mtime. What makes this selection rather than
-  absence: on **08-17, 08-19, 08-20, 08-21 and 08-23** the owner *did* show up (evening exercise
-  mtimes ~22:30) and on every one of those days chose rustlings and skipped the crate — five
-  independent observations, not one gap.
-  - **Refuted: "the step is too big."** `piece_at` was one line and was assigned three times.
-    Difficulty was already ruled out as the lever once (2026-08-09, *boring not too hard*).
-  - **Refuted: "shrinking is the lever."** It closed phase 0, then failed every time since — and
-    three runs shrank the *rustlings* half as collateral, dropping it to 1/day against a 2/day
-    setpoint.
-  - **Refuted: "the chess half needs the rustlings half's reach."** The runnable `cargo test`
-    block shipped 08-20 and changed nothing on 08-21/22/23.
-  - **Refuted: "it is weekday crowding."** Sunday's `ds::Queue` had a whole uncontested ~8-minute
-    slot and sat seven days. **No `cargo`-crate step has landed on any day of the week since 08-13.**
-  - **What is left is the owner's call**, asked in the answer box (Spec's *Asking the owner*). The
-    run stops writing bodies: three run-written bodies plus Sunday's `push`/`len` mean phase 1 is
-    the loop's work, not the owner's.
+- **Size, reach and crowding are all refuted as levers on the chess half — don't re-test them.**
+  These survive the 09-21 reversal; only the *conclusion* drawn from them ("it is not chosen")
+  was wrong. **Too big:** `piece_at` was one line and was assigned three times — and difficulty
+  was already ruled out once (2026-08-09, *boring not too hard*). **Shrinking:** closed phase 0,
+  then failed every time since, and three runs shrank the *rustlings* half as collateral,
+  dropping it to 1/day against a 2/day setpoint. **Reach:** the runnable `cargo test <name>`
+  block shipped 08-20 and changed nothing on 08-21/22/23. **Weekday crowding:** Sunday's
+  `ds::Queue` had an uncontested ~8-minute slot and sat seven days. What was actually left was a
+  **gap** — the owner works in bursts. Don't redesign the step a fifth time; wait it out.
 - **A request in the answer box is presence, and it outranks the park rule.** Lesson 17's
   `### My answer` didn't answer the question — it asked for the prerequisite. That is the
   lessons-6/7 gotcha, not a blank: graded ✓, no Review-queue slot burned, and the concept is
@@ -652,21 +701,6 @@ block at the top of `## Track A · Rust`, above today's assignment, inside its 2
   don't repair their code.
 - **A non-compiling crate is a real owner-side state** (08-12), not just a rule binding the run.
   If it recurs, consider making `cargo build` succeeding its own visible `### Done when` step.
-- **Watch this — convergence. The 08-27 check is resolved early, on 08-23, because its conditions
-  are already answered.** The flag asked: has the owner opened the crate once, and is `chess_phase`
-  still 1? **No and yes** — untouched since 08-12, phase 1 open since 08-14 (nine days; phase 0
-  took four). One phase in three weeks against eight phases plus four Sunday structures: **the
-  goal is not reachable at this rate, and daily chess is falsified on evidence.** The lever is no
-  longer a redesign — it is the owner's answer to the Q1 question, and the fallback shape is
-  written into the Spec. **New check, 2026-08-31:** has the question been answered or resolved by
-  presence-with-silence, and has `crate_touched` been 1 even once? If the answer box has been
-  answered on other days while Q1 stays blank, that *is* the answer — apply the fallback and stop
-  re-asking. `structs_done` stays 0 until a Sunday closes `Queue` or phase 2 pulls in `ds::Vec`.
-  **Update 08-27: the check now has a live channel.** Q1 went out on a day with presence, and the
-  owner demonstrably answers the box (08-26 came back filled). So 08-28's data resolves it either
-  way — an answer, or presence-with-silence. Sunday **2026-08-30** is the first Sunday after that
-  and is where the resolution first bites: under fallback (b) it carries the chess step *and*
-  `Queue`, which the Spec says to split across consecutive Sundays rather than cram.
 - **Both projects exist.** `rustlings/` (94 exercises, own git repo) and `rust-dsa/`
   (`cargo new --lib`) are at `/Users/tamnm/code/personal/`. Bootstrap is done — never redo it.
   Baseline at create: `93/94 pending`, `structs_done: 0`, `cargo test` green on the scaffold.
@@ -756,6 +790,10 @@ block at the top of `## Track A · Rust`, above today's assignment, inside its 2
     whether the output holds parseable `test … ok|FAILED` / `test result:` lines, not on the exit
     code — which the chess contract turns false *every day*. A crate that doesn't compile emits
     none of those and lands on `ok: false`, the case that genuinely is blind.
+    **`cargo.why`** (added 2026-09-25) says why ok is false when it isn't broken code: `timeout`
+    = the prefetch was killed mid-build (a cold `target/` after the laptop wakes, since the build
+    has to fit in the host's 30s box), `skipped` = no budget left, null = real compile failure.
+    Either way the answer is the same: run `cargo test` by hand once.
   - **The workflow's test harness is red on two pre-existing cases** (`selection caps at 5 …`,
     `one unreadable exercise …`) — the fixture drifted, not a regression. Until someone reconciles
     it, smoke-test by wrapping the body in an async arrow and running it against the real tree.
@@ -812,6 +850,12 @@ block at the top of `## Track A · Rust`, above today's assignment, inside its 2
     spend another run on `osascript`; the only route is a properly signed app.
   - **Runs do fail, and a failed run is a lost lesson day** (08-02 API drop; 08-03 morning
     EPERM). Those days surface as `gap_days` — never read a gap as the owner going quiet.
+    Since 09-20 the loop's own failures outnumber the owner's skips: in 09-20 → 09-30, 6 of 11
+    slots were "machine unreachable" (laptop asleep/away — runs then fire late, on wake) and one
+    (Sunday 09-27) died on **`Not logged in · Please run /login`** — expired Claude CLI auth, not
+    sleep; only the owner can fix it with `/login`. **Two Sundays in a row lost `ds::Graph`**, so
+    on 10-04 it is still the Sunday structure. Name the gap in the opening note in one line and
+    move on — never diagnose it inside a lesson run.
   - **A run that can't report has still shipped the lesson — say so in one line and stop.** Two
     causes have cost days their metrics, neither worth re-diagnosing: a **server reclaim** after a
     long API stall (08-07, 08-09) and the **npx-cache death** (08-11, 08-18). The reclaim lever is
@@ -832,181 +876,59 @@ block at the top of `## Track A · Rust`, above today's assignment, inside its 2
 
 <!-- one dated entry per run, appended below by the loop -->
 
-- **2026-07-30 – 08-06 (runs 1–7, two evolution passes)** — loop created and bootstrapped
-  (`rustlings init`, 94 exercises; `cargo new --lib rust-dsa`); the owner immediately reshaped
-  it so DSA became a **daily Track B** with a theory-first B1 stage. Track A found its size the
-  hard way (1 → 3 → the exact step) once `next_exercises` proved the *assignment* had been
-  wrong, not the owner. **Delivery solved locally** with `lesson-web.py` after notifications
-  were abandoned with evidence. Two evolution passes built most of the current machinery:
-  `history` / `streak_before_prev` / `gap_days` (deterministic streak, failed-run gaps
-  distinguishable from owner skips), **Sunday review day + derived ~1w/~4w/~12w spaced
-  repetition** via `due_review`, `reviewed_exercises` (owner's code + official solution +
-  pedantic clippy), `next_exercises`, and the **per-section length cap** after words/lesson grew
-  343 → 2,749 in seven days. B1 ran Big-O → dynamic arrays → linked lists → stacks → queues →
-  hashing. 08-02's run failed, so that day has no lesson.
-- **2026-08-07 – 08-09 (runs 8–10)** — the length cap started biting. Lesson 8 graded the first
-  **`partial`**: Track A clean, Track B **blank** — read as *load, not concept*, so trees & BST
-  were re-taught at half the ask and came back answered. First real Sunday review day on 08-09.
-  Runs 8 and 10 both stalled (95 min, 2h15) and lost their metrics to server reclaims.
+*(2026-07-30 → 08-27 condensed to milestones by the 2026-09-21 evolution pass. The durable
+findings from that stretch all live in* Current understanding *; only the dated spine is kept.)*
+
+- **2026-07-30 – 08-06 (runs 1–7)** — loop created and bootstrapped (`rustlings init`, 94
+  exercises; `cargo new --lib rust-dsa`). Owner reshaped it immediately: DSA every day beside
+  Rust, read-only code feedback, grading by compiler not self-report. Lesson words drifted
+  343 → 2,749, which is what produced step 3's budget table.
 - **2026-08-09 (owner reshape, not a lesson run)** — **the goal changed: a chess engine replaced
-  the abstract 8-structure library.** The complaint was *boring, not too hard*, so difficulty
-  was left alone and **connection** became the lever. Track A became two halves (2 rustlings
-  exercises, down from 4, plus that concept spent in `rust-dsa`, graded by a failing `#[test]`
-  the run writes itself); the `generics2`/`box1` B2 gates were deleted in favour of structures
-  pulled in by the chess phase that needs them. The four with no honest chess use moved to
-  Sundays. Loop `goal` rewritten; cron, schema and workflow all unchanged.
-- **2026-08-10 – 08-11 (runs 11–12, one evolution pass)** — the chess track's first two days,
-  both revealing the same thing: the owner overshoots rustlings and drops the chess half
-  (four exercises for an assigned two on 08-10, `square_round_trip` untouched on 08-11), so
-  lesson 11 graded `partial` and phase 0 did not advance. Track B's Sunday test came back four
-  of five wrong, establishing **Big-O as the weak spot rather than any one structure**, and
-  ring-buffer wraparound hit its fourth miss and was re-explained rather than re-queued. The
-  evolution pass fixed `cargo.ok` (it keyed on cargo's exit code, which the day-old chess
-  contract turns false *every* day, so grading read as blind on every run) and lifted `rust_dsa`
-  into the prefetch, killing the daily `ls -R && cat lib.rs` opener; it also added `chess_phase`
-  as the real progress axis. Run 12 shipped its lesson but **could not report** — the `loopany`
-  CLI shim was dead that night — so 08-11 has no `state`.
-- **2026-08-12 – 08-14 (runs 13–15)** — the streak's best stretch, 11 → 13, and the two levers
-  that produced it. **Phase 0 closed 08-13**: the owner's two non-compiling `from_name` attempts
-  were left unrepaired and the *rustlings* pair was aimed at the Rust that unblocked them
-  (`as_bytes()`), which shipped a working `from_name` with validation the hint never asked for —
-  the unrepaired-code lever, vindicated. **Phase 1 opened 08-14** on modules, spent on a
-  `src/chess/piece.rs` the run left deliberately *undeclared* so the missing `pub mod piece;`
-  was itself the exercise. That trap worked exactly as designed — silence, no error — and cost
-  phase 1 a day for one `match`; it was dismantled on 08-15 and the rule against silent-failure
-  devices is now standing. Track B ran sorting → recursion (closing B1 part 1), then **opened
-  B1 part 2** with bitboards on 08-14. Lessons ran 930 / 905 / 958 words, no trim passes.
-- **2026-08-15 – 08-17 (runs 16–18)** — the **13-day streak broke to zero and stayed there**, three
-  `skipped` days running. 08-15's miss dismantled the undeclared-module trap (the run wrote the
-  `pub mod` + `pub use` into `src/chess.rs` itself); 08-16 and 08-17 were genuine zero days —
-  rustlings flat, `reviewed_exercises` empty two Mondays running, every `### My answer` blank. Each
-  run read that as difficulty and shrank, bottoming out at **587 words** on 08-17 with all three
-  sections cut at once — the smallest lesson the loop has issued, and the point the shrink ladder
-  ran out of road. 08-16's Sunday **shipped the first `ds::` structure**: `Queue` had been
-  buildable for eleven days and nothing had checked. It is deliberately **not** a ring buffer —
-  `pop` is `O(n)` via `remove(0)`, documented as such, because wraparound is the owner's
-  most-missed idea (four times) and `Option::take` isn't taught yet.
-- **2026-08-18 – 08-19 (runs 19–20)** — the stall broke to two `partial` days, **streak 0 → 1 → 2**,
-  both Track A ✗ / Track B ✓. 08-18: with `consecutive_skips` at 3, the new *Absence, not
-  difficulty* rule held the step steady instead of shrinking a fourth time, and its "fresh start"
-  clause forced the run to write `PieceKind::from_char`'s `match` itself — closing piece parsing and
-  opening `src/chess/board.rs` (`piece_at` the single `todo!()`, test `board_set_and_read`). The
-  answer box came back as a *request* ("teach me shift bit/byte first"), so bitboards was taught
-  from scratch rather than parked. 08-19: the Track A miss was a near-miss worth the lesson —
-  `fruit_basket` was **correct** and `hashmaps2` red only because `main` passed the map by value to
-  a `&mut` parameter; that code was invisible in `reviewed_exercises` and only visible in
-  `next_exercises[0].code`, now a standing note. Bitboards closed (dsa 11 → 12) and minimax opened.
-  08-18 **could not report** (the npx shim died as on 08-11), so it has no `state`; its metrics
-  would have been `day 18 · phase 1 · rustlings 44 · dsa 11 · structs 0 · streak 1 · 705 words`.
-- **2026-08-19, second wake (owner-triggered)** — the owner reactivated the loop believing the day
-  had no lesson (the run showed `pending` with no metrics, so from outside it looked failed); the
-  second run had no prefetch payload and **overwrote that day's lesson file**, recovered from the
-  Timeline. Two standing lessons, now in *Gotchas*: **read the Timeline before writing any lesson
-  file**, and **a `pending` run with no metrics is not a failed run** — check `lessons/<today>.md`.
-- **2026-08-20 – 08-22 (runs 21–23)** — streak 0 → 1 → 2, all three **Track A ✗ / Track B ✓**: the
-  rustlings half and the answer box both landed while **the crate missed every single day**.
-  `hashmaps2`/`hashmaps3` green, Track B ran minimax → **alpha-beta**, right on all counts. Two
-  findings became standing notes: the `hashmaps2` near-miss (a correct body, red only because
-  `main` passed the map by value to a `&mut` parameter), and **`quiz2` written and correct yet not
-  in `done`** because rustlings only ticks what its watcher has run — now the `owner_modified`
-  field. The *untouched* rule meanwhile ran to its end twice: the run wrote `piece_at` and
-  `to_char` itself, advancing phase 1 on its own code, and asked the crate question in the 08-21
-  **opening note** — unanswered, and wrongly closed. 743 / 799 / 844 words.
-- **2026-08-23** — run 24, **Sunday review week 4**. Lesson 22 `skipped`, streak 2 → **0**; a
-  genuine zero day, fifth with `owner_touched` false. **Track A went to `ds::Queue`, unbuilt since
-  08-16** — the run wrote `push`/`len` (one line each, teach nothing) and left **`pop`** as the
-  single body, where the idea is (`Option` answers *is there anything* and *what* at once;
-  `Vec::remove(0)` panics on empty, so the guard comes first). Tests `queue_is_fifo` +
-  `queue_empty_pops_none`. **Track B ran 4 questions, not 5** — the ~4-week rung is unfillable at
-  24 days old and padding is against the rule. 727 words.
-- **2026-08-24 – 08-25 (runs 25–26, lessons 23–24)** — the last day with presence, then the first
-  of the run of empty rooms. **08-24**: `quiz2` + `options1` went green (46 → 48) — the owner
-  showed up and **again chose rustlings over the crate, a seventh independent observation**. Rules
-  fired as written: rustlings half landed → back to the **full setpoint of two**; the chess half
-  was **omitted entirely for the first time** (phase 1's run-written-body cap spent, *untouched*
-  rule gives those ~4 min back), and the run made **no crate edit at all**, deliberately, so the
-  next `owner_touched` is a pure owner signal. **Q1 became the A/B crate decision asked in the
-  answer box** per *Asking the owner* — first time; the 08-21 opening-note attempt is superseded.
-  **08-25**: zero presence anywhere, so the blank Q1 was an **empty room, not a decision** — the
-  question stays open and was not re-asked. `consecutive_skips` → 3, *Absence, not difficulty*
-  fired for the second time in the loop's life. Memoization vs tabulation **parked** at its third
-  serve → *Review queue*; Track B rotated to iterative deepening. 895 / 688 words, no trim passes.
-- **2026-08-26** — run 27, **lesson 25**. Lesson 24 `skipped`, `consecutive_skips` → **4**, third
-  straight day under *Absence, not difficulty*. Step held at two; rustlings' order is pinned so the
-  **same pair went out a third time**, but the *concept* was cut to a two-line reminder and the
-  day's depth moved wholesale to Track B. Chess half and crate edit omitted for the third day
-  (phase 1 blocked, cap spent). Q1 **not** re-asked — third empty room. Track B rotated forward a
-  second time, to **move ordering** — the rotation the 08-26 evolution pass then ruled out for
-  absent days (see *Rotate forward on the RETURN day*). 786 words, no trim pass. The `loopany` shim
-  died mid-run and was repaired; the incident lives in *Gotchas · npx-cache death*, not here.
-- **2026-08-13 — evolution pass.** B1's part-1 list closed with chess still at phase 1, so no
-  structure was due and Track B had nothing to teach; gave B1 a **part 2** of eight engine-theory
-  concepts, each pulled by the phase that needs it (see *Curriculum*). Declared `words` so the
-  length cap charts. Workflow unchanged. Distilled runs 1–12 to a dated spine.
-- **2026-08-17 — evolution pass.** A 13-day streak ended 08-14 into three zero days that three runs
-  read as difficulty, shrinking to a 587-word floor. **Task**: added *Absence, not difficulty* and
-  the **park rule**. **Workflow**: added `consecutive_skips`.
-- **2026-08-20 — evolution pass.** Measured the cause: every `.rs` in `rust-dsa` carried the *run's
-  own* mtime, so a one-line `piece_at` had been assigned three times to a file nobody had opened.
-  **Task**: *shrink the half that missed, never the half that landed*; *the chess half is untouched,
-  not too big*; and a runnable `cargo test <name>` block in `### Chess step` (the reach hypothesis,
-  falsified three days later). **Workflow**: `rust_dsa.owner_touched` + `touched_paths`.
-  **Dashboard**: split the Progress chart off `rustlings_done`.
-- **2026-08-23 — evolution pass. The 08-27 check resolved four days early: daily chess is falsified,
-  and the cause is selection, not absence or difficulty** (evidence now consolidated in *Current
-  understanding*'s refuted-hypotheses list). **Task**: capped run-written bodies at one per phase
-  and stopped them advancing `chess_phase`; added *Asking the owner* (decisions go in Track B's Q1
-  box, and the 08-21 question is **re-opened**); wrote the Sundays-only fallback shape; keyed
-  keystroke-vs-miss on `owner_modified`; pinned `dsa_topics`/`structs_done` as cumulative after
-  `dsa_topics` reported 12 → 13 → 14 → **12**. **Workflow**: added
-  `next_exercises[i].owner_modified`. **Dashboard**: declared `crate_touched` and charted it.
-- **2026-08-26 — evolution pass.** Still stalled (phase 1 since 08-14, `crate_touched` 0 since
-  08-12, streak 0, four straight empty rooms), but the stall's cause is already diagnosed and the
-  lever is the owner's answer — so this pass fixed the two things the *runs* were doing wrong while
-  they wait. **Task**: (1) *Rotate forward on the RETURN day, not on every absent day* — the
-  *Absence* rule's rotate-don't-re-serve clause was firing daily and had spent **2 of B1 part 2's 8
-  concepts (iterative deepening, move ordering) on lessons nobody opened**, with only Zobrist and
-  transposition tables left; Track B now holds its concept while `presence.any` is false, and the
-  three-serve park rule counts only serves that were *read*. (2) Pointed the *take the answer as
-  given* rule at the new `presence.any` field instead of restating its test in prose.
-  **Workflow**: added `presence` (`{any, signals}`), the OR over `reviewed_exercises` / any
-  `owner_modified` / `owner_touched` that runs 25–27 each re-derived by hand and that three rules
-  key on. Smoke-tested wrapped as an async fn against the real tree, clock shifted to 08-27 (730 ms,
-  `presence.any` false, cross-checked against all three underlying fields) plus a five-case check of
-  the OR's true branches. **Dashboard**: rewrote the Rustlings paragraph, which credited every dip
-  to a wrongful shrink and so misread its own flat line; it now distinguishes 1/day (shrink) from
-  flat (absence). **Distilled 970 → 891 lines (~29.5k → ~19.4k tokens)** — the file had outgrown the
-  Read cap, and every run was paging it in 2–6 times (the 08-26 run: five Reads plus a grep, the
-  $2.70 outlier). Merged runs 25–26, compressed runs 21–24 and the three prior evolution passes to
-  milestone lines, folded the resolved npx incident into its gotcha, and cut duplicated narration
-  from *Current understanding*. Kept every baseline, gotcha, queue item, open question, and the
-  08-31 check.
-- **2026-08-26 — evolution pass (owner-directed): inversion.** Exercises and hints were
-  forward-only, and both known failure modes have the same fix. (1) **`### Stuck?` is now an
-  elimination, not a nudge** — it names a wrong turn and never points at the right one. The 60-word
-  cap alone did not hold (run 7 shipped **813 words** under it); a hint that closes one door is
-  structurally one sentence, so the *shape* enforces the length the cap couldn't. (2) **Every
-  Concept closes with a ≤20-word failure mode**, inside the existing budget. (3) **B1 has two
-  question forms** — forward on a first serve, **inverted** on a repeat serve, on Sunday, and on
-  every wrong-answer-queue item; part 2's table gained an inverted variant per concept. This fills
-  the hole the *Rotate forward on the RETURN day* rule left: on a held concept the run must re-ask
-  without re-teaching, and inversion is the only form that does. (4) **The inverted chess half
-  ("ship it broken")** — the run writes a wrong body, the owner writes the catching test. Fenced to
-  `tests/invert_<date>.rs`, a closed phase, once per phase; it never advances `chess_phase` and does
-  **not** spend the one-run-written-body-per-phase budget. Nothing downstream moved: no new
-  headings, `### My answer` and the worked-answer heading untouched, no word-budget change, no
-  workflow change (grading reuses `cargo.passing` + `rust_dsa.files`), so no push — the brief syncs
-  on the next run.
-- **2026-08-27 (run 28, lesson 26)** — **the owner came back.** Graded 25 `partial`: Track B ✓
-  (Q1's `2·b^(d/2)−1` right, Q2's ranking wrong → Review queue, corrected in today's note) and
-  Track A ✗ only because `options3` holds a **correct** `Some(ref p)` the watcher never ran —
-  presence, not a miss, so no re-teach and the pair advanced to `options3` + `errors1` at the full
-  two-exercise setpoint. `consecutive_skips` 4 → 0, streak 1, `rustlings.done` 49/94. Three return-day
-  rules fired at once: Track B **rotated forward** off the held concept (move ordering passed,
-  `dsa_topics` 15) to **Zobrist hashing**, the lesson opened on the next concept rather than
-  retrying the abandoned one, and **the open crate question was re-asked as Q1** — its first day
-  with a live channel after three empty rooms. No chess half and no crate edit for the fourth day:
-  phase 1 is blocked on the owner (`owner_touched` false a ninth day, body budget spent), and
-  serving a chess step while asking whether chess belongs in weekdays would pre-empt the answer.
-  `### Yesterday's code` omitted — `options2` matched the official solution with clippy clean, and
-  the Spec makes silence the correct output for a clean day. 919 words, no trim pass.
+  the abstract 8-structure library.** The complaint was *boring, not too hard* — nothing built
+  survived to the next day. Chess roadmap (phases 0–8) written; four structures kept as Sunday
+  standalones because they have no honest chess use.
+- **2026-08-10 – 08-14 (runs 11–15)** — chess track opened; the streak's best stretch, 11 → 13.
+  Phase 0 closed. B1 part 1 (classical DSA) completed 08-13, so part 2 (engine theory) was
+  written to stop Track B running dry.
+- **2026-08-15 – 08-23 (runs 16–24)** — **the 13-day streak broke to zero and did not recover.**
+  Three runs read it as difficulty and shrank the lesson to a 587-word floor; three run-written
+  chess bodies were spent unblocking phase 1. 08-20's evolution pass measured the actual cause:
+  every `.rs` in `rust-dsa` still carried the *run's* mtime, so the chess step was never opened
+  at all. `owner_touched` / `crate_touched` were added as fields; the *Absence, not difficulty*
+  and *untouched, not too big* rules were written.
+- **2026-08-24 – 08-26 (runs 25–27)** — the crate A/B question asked in the answer box; then
+  five consecutive empty rooms. Evolution added `presence` as a field, the read-serves-only park
+  rule, and (owner-directed) the **inversion** contract — inverted B1 questions, elimination-only
+  `### Stuck?` hints, and the fenced *ship-it-broken* chess half.
+- **2026-08-27 (run 28, lesson 26)** — the owner came back for one day, answered Track B, and
+  left the crate Q1 blank. That blank is what 09-19 later over-read as a decision.
+- **2026-08-28 – 09-12 — blackout, cause unknown, 16 days with no lesson file.** `lessons/` jumps
+  straight from 08-27 to 09-13. Lesson 26 (08-27) is still `type: assigned` — never graded, and
+  deliberately left that way on 09-19 because regrading it now would desync the workflow's
+  pre-computed `streak_before_prev`. Its Q1 (the crate question) went unanswered, which is what
+  09-19 finally resolved. `ds::Queue::pop` was written by *someone* in this window (its tests pass
+  now, `structs_done` 0 → 1) and `ds::Graph` was assigned on a review Sunday and left red.
+- **2026-09-13 – 09-18 (lessons 39–44) — six runs shipped lessons and NONE of them updated this
+  brief.** Zero `2026-09` entries existed in *Timeline* before today, and *Current understanding*
+  still opened on 08-27. All six graded `skipped` into empty rooms; Track B held Zobrist hashing
+  (inverted) unchanged across five of them, per *Rotate forward on the RETURN day*. Worth naming
+  as a failure mode: **a run can ship its lesson and still lose the day's memory** — step 4 is not
+  optional, and six consecutive misses meant run 45 had to reconstruct the position from
+  `history` + `cargo` rather than read it.
+- **2026-09-19 (run 45)** — `presence` true for the first time since 08-27; Track B rotated
+  forward to transposition tables. The 08-27 crate Q1 was read as *answered by silence* and
+  weekday chess was removed (all crate work → Sunday). That reading was wrong (next entry).
+- **2026-09-21 (run 46) — the fallback REVERSED.** Sunday 09-20 failed, yet the owner opened
+  `src/chess/board.rs` unprompted and turned `board_rank_line` green (`crate_touched` 0 → 1 after
+  38 days). Weekday chess restored with `Board::render` / `board_render` (red by panic, 10/3).
+  Track B opened iterative deepening, `dsa_topics` 16. Same day's **evolution pass** closed the
+  crate question in the Spec ("a flat `crate_touched` is a gap, not a decision"), documented the
+  mandatory `metrics:` line, added the reading recipe, and distilled the file 1,102 → ~930 lines.
+- **2026-09-25 (run 47)** — `gap_days: 3` (machine unreachable). Lesson 46 **partial**: B ✓ on
+  lesson 45's TT answers written into 46's box, `dsa_topics` 17. Prefetch `cargo.ok: false` with
+  no errors; **evolve** traced it to a cold `target/` right after wake and added `cargo.why`.
+- **2026-09-26 (run 48, lesson 48)** — Empty room (`presence.any` false, `gap_days` 0). Lesson 47
+  **skipped**. Held everything: `errors4`+`errors5`, `board_render`, iterative deepening inverted (same Qs).
+  No crate edit. `dsa_topics` 17, streak 0, 682 words.
+- **2026-09-30 (run 49, lesson 49)** — `gap_days: 3` (09-27…29 failed; Sunday `ds::Graph` lost again). Empty room. Lesson 48 **skipped**. Held `errors4`+`errors5` and ID inverted; `board_render` demoted from gate to a standing one-liner after three unread serves. No crate edit. `dsa_topics` 17, streak 0, 679 words.
+- **2026-10-01 (run 50, lesson 50)** — Empty room, `gap_days` 0. Lesson 49 **skipped**; `consecutive_skips` hits 3, so the Absence rule is live: held everything unchanged (`errors4`+`errors5`, `board_render` one-liner, ID inverted). No crate edit. `dsa_topics` 17, streak 0, 652 words.

@@ -23,7 +23,7 @@ const day = (s) => new Date(s + 'T00:00:00Z');
 //
 // `overrides` lets an individual test punch in extra rel-path -> Date stamps *after* the
 // baseline below, to build a scenario-specific pool without duplicating this whole function.
-async function stampFixtureMtimes(overrides = {}) {
+async function stampFixtureMtimes(overrides = {}, cutoffExtraFrontMatter = '') {
   const stamp = async (rel, date) => {
     await fs.utimes(path.join(FIXTURE, rel), date, date);
   };
@@ -38,7 +38,7 @@ async function stampFixtureMtimes(overrides = {}) {
   // fresh, known birthtime, then push mtime forward to simulate a post-issue write-back.
   const cutoffLesson = path.join(FIXTURE, 'loopany/daily-lesson/lessons/2026-08-02.md');
   await fs.rm(cutoffLesson, { force: true });
-  await fs.writeFile(cutoffLesson, '---\ntype: done\n---\nSome content\n');
+  await fs.writeFile(cutoffLesson, `---\ntype: done\n${cutoffExtraFrontMatter}---\nSome content\n`);
   const birth = (await fs.stat(cutoffLesson)).birthtimeMs;
   const writeBackMs = birth + 60 * 60 * 1000; // +1h: simulated post-issue answer write-back
   await fs.utimes(cutoffLesson, new Date(writeBackMs), new Date(writeBackMs));
@@ -116,9 +116,16 @@ async function runWorkflow(opts = {}) {
   if (baseVal === FIXTURE) {
     // Re-stamp before every fixture run so no test can accidentally run against whatever
     // mtimes the filesystem happens to have. Never touches the real tree (opts.base skips this).
-    await stampFixtureMtimes(opts.mtimeOverrides || {});
+    await stampFixtureMtimes(opts.mtimeOverrides || {}, opts.cutoffExtraFrontMatter || '');
   }
   let body = await fs.readFile(SRC, 'utf8');
+
+  // Pins the workflow's `today` so a fixture lesson can land on a ladder rung.
+  if (opts.today !== undefined) {
+    const todayStr = "const today = now.toLocaleDateString('en-CA', tz);";
+    if (!body.includes(todayStr)) throw new Error('Could not find the `const today = ...` line in the workflow file');
+    body = body.replace(todayStr, `const today = '${opts.today}';`);
+  }
 
   const searchStr = "const base = '/Users/tamnm/code/personal';";
   if (!body.includes(searchStr)) {
@@ -726,4 +733,494 @@ test('capWarnings keeps every error even when errors alone exceed the cap', asyn
     'when errors alone exceed the cap, no warning-level entry should take a slot that belongs to an error');
 });
 
+// ─── The no-agent hold gate ───────────────────────────────────────────────────
+//
+// The gate shipped 2026-09-07 and NEVER FIRED: it was interlocked on `prev`, the host cursor,
+// which the escalation path never writes (`return {}`), so it could only fire the day after it
+// had already fired. Four eligible days woke a ~$1.50 agent to copy a file. The interlock now
+// reads a `metrics:` line out of yesterday's own front matter, and these two tests are the
+// evidence that it fires at all — the check the original gate never had.
+//
+// Both build their own throwaway lessons tree rather than using FIXTURE: the gate is keyed on
+// TODAY's real date, and the fixture's 2026-08 lessons can never satisfy `gap_days === 0`.
+async function runHoldScenario({ withMetrics, withAttempts = false }) {
+  const tmpBase = path.join(here, `.wf.hold.${Date.now()}.${Math.random().toString(36).slice(2)}`);
+  const lessons = path.join(tmpBase, 'loopany/daily-lesson/lessons');
+  await fs.mkdir(lessons, { recursive: true });
+
+  // Same zone the workflow does its date math in, so "yesterday" lines up with its `today`.
+  const tz = { timeZone: 'Asia/Ho_Chi_Minh' };
+  const at = (back) =>
+    new Date(Date.now() - back * 86400000).toLocaleDateString('en-CA', tz);
+
+  // Three graded `skipped` days put consecutive_skips at the gate's threshold of 3.
+  for (const back of [4, 3, 2]) {
+    await fs.writeFile(
+      path.join(lessons, at(back) + '.md'),
+      `---\ntype: skipped\ntitle: "Lesson x"\ndate: ${at(back)}\n---\n\n# Lesson x\n\n---\n\nbody\n`,
+    );
+  }
+  // Yesterday: still `assigned`, answer box empty — nothing to grade but a skip. The third bare
+  // `---` is what the carry-forward reads as the start of the immutable body.
+  await fs.writeFile(
+    path.join(lessons, at(1) + '.md'),
+    ['---', 'type: assigned', 'title: "Lesson 37 · Rust: `?` · DSA: Zobrist"', `date: ${at(1)}`,
+      ...(withMetrics ? ['metrics: day=37 chess_phase=1 dsa_topics=15 structs_done=1'] : []),
+      ...(withAttempts ? ['attempts:', '  - id=b1.alpha-beta result=correct help=none kind=application'] : []),
+      '---', '', '# Lesson 37', '', 'opening note', '', '---', '', '## Track A', '',
+      '## My answer', '', '## Worked answer', '', 'x', ''].join('\n'),
+  );
+
+  let body = await fs.readFile(SRC, 'utf8');
+  // A silent no-op on either replace below would write the REAL lessons tree / open a browser.
+  const guard = async (needle, what) => {
+    if (body.includes(needle)) return;
+    await fs.rm(tmpBase, { recursive: true, force: true });
+    throw new Error(`hold harness: ${what} not found in workflow source`);
+  };
+  const baseLine = "const base = '/Users/tamnm/code/personal';";
+  await guard(baseLine, 'base line');
+  body = body.replace(baseLine, `const base = '${tmpBase}';`);
+  // Same source-surgery technique as the `base` and HOST_TIMEOUT_MS overrides above. Friday is
+  // real work and falls through to the agent by design — pinning this false keeps the test from
+  // failing one day in seven for a reason that has nothing to do with the interlock.
+  const reviewLine = 'const isReviewDay = isReviewDayOn(now, tz);';
+  if (!body.includes(reviewLine)) throw new Error('hold harness: isReviewDay line not found in workflow source');
+  body = body.replace(reviewLine, 'const isReviewDay = false;');
+  // The hold path spawns lesson-web.py --open, which would pop a browser and leave a server
+  // running. Point it at nothing: the spawn fails into its own catch, which is the exact
+  // "delivery failed, the file is written anyway" path the workflow already handles.
+  const webPy = "'/Users/tamnm/.claude/tools/lesson-web.py'";
+  await guard(webPy, 'lesson-web.py path');
+  body = body.replace(webPy, "'/nonexistent/lesson-web.py'");
+
+  const tmp = path.join(here, `.wf.hold.harness.${Date.now()}.${Math.random().toString(36).slice(2)}.mjs`);
+  await fs.writeFile(tmp, `export default async function(){\n${body}\n}`);
+  let called = false;
+  globalThis.agent = async () => { called = true; };
+  try {
+    const mod = await import(tmp + '?t=' + process.hrtime.bigint());
+    const result = await mod.default();
+    // Read the products BEFORE the finally below deletes the tree.
+    const readOrNull = (d) => fs.readFile(path.join(lessons, d + '.md'), 'utf8').catch(() => null);
+    return { result, called, written: await readOrNull(at(0)), graded: await readOrNull(at(1)) };
+  } finally {
+    await fs.rm(tmp, { force: true });
+    await fs.rm(tmpBase, { recursive: true, force: true });
+  }
+}
+
+test('an eligible absence weekday is held by the workflow itself — no agent, metrics carried', async () => {
+  const { result, called, written, graded } = await runHoldScenario({ withMetrics: true });
+
+  assert.equal(called, false, 'the hold path must not wake the agent');
+  assert.ok(result && result.state, 'a hold day must return state, not a silent tick');
+  assert.equal(result.state.day, 38, 'day must advance from yesterday\'s metrics line');
+  assert.equal(result.state.chess_phase, 1, 'cumulative metrics must carry, never regress');
+  assert.equal(result.state.dsa_topics, 15);
+  assert.equal(result.state.structs_done, 1);
+  assert.equal(result.state.streak, 0);
+
+  assert.ok(written, 'a hold day must write today\'s lesson file');
+  assert.match(written, /^type: assigned$/m, 'the held lesson is issued, not graded');
+  assert.match(
+    written,
+    /^metrics: day=38 chess_phase=1 dsa_topics=15 structs_done=1$/m,
+    'the held file must carry its own metrics line, or a SECOND consecutive hold day declines',
+  );
+  assert.match(written, /## Track A/, 'the previous weekday body must be carried forward verbatim');
+
+  assert.match(graded, /^type: skipped$/m, 'yesterday must be graded skipped by the hold path');
+});
+
+test('a hold day never carries attempt records forward into today\'s lesson', async () => {
+  const { called, written, graded } = await runHoldScenario({ withMetrics: true, withAttempts: true });
+  assert.equal(called, false, 'precondition: the hold path must have fired');
+  assert.ok(written, 'precondition: a hold day must write today\'s lesson file');
+  const { parseAttempts } = await loadEvidenceModule();
+  assert.equal(parseAttempts(written).present, false,
+    'the held lesson must not repeat the source lesson\'s attempts — that would double-count evidence');
+  assert.equal(parseAttempts(graded).present, true, 'the graded source keeps its own attempts');
+});
+
+test('a missing metrics line declines the hold and falls back to the agent', async () => {
+  const { result, called, written } = await runHoldScenario({ withMetrics: false });
+
+  assert.equal(called, true, 'without the interlock value the agent must run — never a bad hold');
+  assert.deepEqual(result, {}, 'the escalation path returns no state');
+  assert.equal(written, null,
+    'the workflow must not write a lesson on a declined hold — that is the agent\'s job');
+});
+
 export { runWorkflow };
+
+// The evidence-levels block is extracted straight out of the real source by its marker
+// comments (same technique as loadTimingModule) so these test the functions the workflow runs.
+async function loadEvidenceModule() {
+  const body = await fs.readFile(SRC, 'utf8');
+  const start = body.indexOf('// Evidence levels:');
+  const end = body.indexOf('// End evidence levels.');
+  if (start === -1 || end === -1) {
+    throw new Error('Could not locate the evidence-levels block in the workflow source');
+  }
+  const wrapped = `${body.slice(start, end)}\nexport { REVIEW_DAY, RUNGS, parseAttempts, deriveConcepts, lessonLadder, conceptLadder, conceptIdsIn, unknownIdsOf, isReviewDayOn, isReviewLesson, questionIdsOf, reviewIdMismatchesOf };\n`;
+  const tmp = path.join(here, `.wf.evidence.harness.${Date.now()}.${Math.random().toString(36).slice(2)}.mjs`);
+  await fs.writeFile(tmp, wrapped);
+  try {
+    return await import(tmp + '?t=' + process.hrtime.bigint());
+  } finally {
+    await fs.rm(tmp, { force: true });
+  }
+}
+
+const rec = (date, id, result, help, kind) => ({ date, id, result, help, kind });
+
+test('parseAttempts reads front-matter records only, in both key=value and key: value form, across CRLF', async () => {
+  const { parseAttempts } = await loadEvidenceModule();
+  // Shape copied from a real lesson's front-matter (lessons/2026-10-01.md), plus attempts.
+  const lesson = [
+    '---',
+    'type: done',
+    'title: "Lesson 51 · Rust: x · DSA: y"',
+    'date: 2026-10-02',
+    'metrics: day=51 chess_phase=1 dsa_topics=17 structs_done=1',
+    'attempts:',
+    '  - id=b1.alpha-beta result=correct help=none kind=application',
+    '  - id: rs.errors2 result: partial help: hint kind: application',
+    '  - id=B1.Alpha result=correct help=none kind=application',
+    '  - id=b1.minimax result=maybe help=none kind=application',
+    'answered_at: 2026-10-02',
+    '---',
+    '',
+    '# Lesson 51',
+    'attempts:',
+    '  - id=b1.zobrist result=correct help=none kind=application',
+    '',
+  ].join('\r\n');
+  const p = parseAttempts(lesson);
+  assert.equal(p.present, true);
+  assert.deepEqual(p.attempts, [
+    { id: 'b1.alpha-beta', result: 'correct', help: 'none', kind: 'application' },
+    { id: 'rs.errors2', result: 'partial', help: 'hint', kind: 'application' },
+  ]);
+  assert.deepEqual(p.errors, [
+    '- id=B1.Alpha result=correct help=none kind=application',
+    '- id=b1.minimax result=maybe help=none kind=application',
+  ]);
+});
+
+test('parseAttempts accepts list items with no indentation', async () => {
+  const { parseAttempts } = await loadEvidenceModule();
+  const p = parseAttempts('---\ntype: done\nattempts:\n- id=b1.zobrist result=correct help=none kind=application\n- id=b1.minimax result=partial help=hint kind=retrieval\nanswered_at: x\n---\n');
+  assert.equal(p.present, true);
+  assert.deepEqual(p.attempts, [
+    { id: 'b1.zobrist', result: 'correct', help: 'none', kind: 'application' },
+    { id: 'b1.minimax', result: 'partial', help: 'hint', kind: 'retrieval' },
+  ]);
+  assert.deepEqual(p.errors, []);
+});
+
+test('parseAttempts: a value on the attempts: line itself is present and an error, never silently absent', async () => {
+  const { parseAttempts } = await loadEvidenceModule();
+  const p = parseAttempts('---\ntype: done\nattempts: [ id=b1.zobrist result=correct help=none kind=application ]\n---\n');
+  assert.equal(p.present, true);
+  assert.deepEqual(p.attempts, []);
+  assert.deepEqual(p.errors, ['attempts: [ id=b1.zobrist result=correct help=none kind=application ]']);
+});
+
+test('parseAttempts strips one pair of surrounding quotes from an item', async () => {
+  const { parseAttempts } = await loadEvidenceModule();
+  const p = parseAttempts('---\nattempts:\n  - "id=b1.zobrist result=correct help=none kind=application"\n  - \'id=b1.minimax result=incorrect help=none kind=retrieval\'\n---\n');
+  assert.deepEqual(p.attempts, [
+    { id: 'b1.zobrist', result: 'correct', help: 'none', kind: 'application' },
+    { id: 'b1.minimax', result: 'incorrect', help: 'none', kind: 'retrieval' },
+  ]);
+  assert.deepEqual(p.errors, []);
+});
+
+test('deriveConcepts and lessonLadder skip an impossible date instead of throwing', async () => {
+  const { deriveConcepts, lessonLadder } = await loadEvidenceModule();
+  let c;
+  assert.doesNotThrow(() => {
+    c = deriveConcepts([
+      rec('2026-13-45', 'b1.bad', 'correct', 'none', 'application'),
+      rec('2026-10-01', 'b1.ok', 'correct', 'none', 'application'),
+    ], '2026-10-04');
+  });
+  assert.deepEqual(Object.keys(c), ['b1.ok'], 'the impossible-date record is ignored');
+  let due;
+  assert.doesNotThrow(() => {
+    due = lessonLadder([
+      { date: '2026-13-45', type: 'done', title: 'Bad' },
+      { date: '2026-09-27', type: 'done', title: 'A' },
+    ], '2026-10-04', new Set());
+  });
+  assert.deepEqual(due.map((d) => d.date), ['2026-09-27']);
+});
+
+test('parseAttempts on a pre-cutover lesson: present false, nothing parsed, never throws', async () => {
+  const { parseAttempts } = await loadEvidenceModule();
+  assert.deepEqual(parseAttempts('---\ntype: done\n---\n### My answer\nx\n'), { present: false, attempts: [], errors: [] });
+  assert.deepEqual(parseAttempts('no front-matter at all'), { present: false, attempts: [], errors: [] });
+});
+
+test('deriveConcepts: every level transition', async () => {
+  const { deriveConcepts } = await loadEvidenceModule();
+  const c = deriveConcepts([
+    rec('2026-10-01', 'b1.a', 'correct', 'none', 'application'),
+    rec('2026-10-01', 'b1.b', 'correct', 'hint', 'application'),
+    rec('2026-09-01', 'b1.c', 'correct', 'none', 'application'),
+    rec('2026-09-08', 'b1.c', 'correct', 'none', 'retrieval'),
+    rec('2026-09-01', 'b1.d', 'correct', 'none', 'application'),
+    rec('2026-09-08', 'b1.d', 'correct', 'none', 'application'),
+    rec('2026-09-01', 'b1.e', 'correct', 'none', 'application'),
+    rec('2026-09-08', 'b1.e', 'incorrect', 'none', 'retrieval'),
+    rec('2026-10-01', 'b1.f', 'incorrect', 'none', 'application'),
+    rec('2026-09-01', 'b1.g', 'correct', 'none', 'application'),
+    rec('2026-09-08', 'b1.g', 'partial', 'none', 'retrieval'),
+    rec('2026-10-01', 'b1.k', 'correct', 'none', 'retrieval'),
+  ], '2026-10-04');
+  assert.equal(c['b1.a'].level, 'demonstrated');
+  assert.equal(c['b1.b'].level, 'practicing', 'a hinted correct is not independent');
+  assert.equal(c['b1.c'].level, 'retained', 'clean retrieval after an earlier clean success');
+  assert.equal(c['b1.d'].level, 'demonstrated', 'a second application is not retrieval');
+  assert.equal(c['b1.e'].level, 'needs-repair', 'was demonstrated, latest incorrect');
+  assert.equal(c['b1.f'].level, 'practicing', 'incorrect without an earlier success is not a repair');
+  assert.equal(c['b1.g'].level, 'practicing', 'partial after a success is practicing, not needs-repair');
+  assert.equal(c['b1.k'].level, 'demonstrated', 'a first-ever clean retrieval has nothing to have retained');
+  assert.equal(c['b1.k'].rung, 0);
+  assert.deepEqual(Object.keys(c['b1.a']).sort(), ['due', 'is_due', 'last_date', 'level', 'rung', 'rung_label']);
+  assert.equal(c['b1.a'].rung_label, '1w');
+  assert.equal(c['b1.c'].rung_label, '4w');
+});
+
+test('deriveConcepts: rung advances only on a clean retrieval, holds otherwise, caps at 12w', async () => {
+  const { deriveConcepts } = await loadEvidenceModule();
+  const c = deriveConcepts([
+    rec('2026-10-01', 'b1.a', 'correct', 'none', 'application'),
+    rec('2026-09-01', 'b1.c', 'correct', 'none', 'application'),
+    rec('2026-09-08', 'b1.c', 'correct', 'none', 'retrieval'),
+    rec('2026-09-01', 'b1.i', 'correct', 'none', 'application'),
+    rec('2026-09-08', 'b1.i', 'correct', 'none', 'retrieval'),
+    rec('2026-10-06', 'b1.i', 'correct', 'hint', 'retrieval'),
+    ...['2026-01-01', '2026-01-08', '2026-02-05', '2026-04-30', '2026-07-23'].map((d, n) =>
+      rec(d, 'b1.h', 'correct', 'none', n === 0 ? 'application' : 'retrieval')),
+  ], '2026-10-04');
+  assert.equal(c['b1.a'].rung, 0);
+  assert.equal(c['b1.a'].due, '2026-10-08');
+  assert.equal(c['b1.c'].rung, 1);
+  assert.equal(c['b1.c'].due, '2026-10-06');
+  assert.equal(c['b1.i'].rung, 1, 'a hinted retrieval keeps the rung');
+  assert.equal(c['b1.i'].due, '2026-11-03', 'and restarts the clock from that attempt');
+  assert.equal(c['b1.h'].rung, 2, 'never past 12w');
+});
+
+test('deriveConcepts: due from 3 days before, overdue stays due', async () => {
+  const { deriveConcepts } = await loadEvidenceModule();
+  const c = deriveConcepts([
+    rec('2026-10-01', 'b1.later', 'correct', 'none', 'application'), // due 10-08: 4 days out
+    rec('2026-09-30', 'b1.edge', 'correct', 'none', 'application'), // due 10-07: 3 days out
+    rec('2026-08-01', 'b1.over', 'correct', 'none', 'application'), // due 08-08: long overdue
+  ], '2026-10-04');
+  assert.equal(c['b1.later'].is_due, false);
+  assert.equal(c['b1.edge'].is_due, true);
+  assert.equal(c['b1.over'].is_due, true);
+});
+
+test('deriveConcepts: date order wins across dates, file order wins within one date', async () => {
+  const { deriveConcepts } = await loadEvidenceModule();
+  const sameDayA = deriveConcepts([
+    rec('2026-10-01', 'b1.x', 'correct', 'none', 'application'),
+    rec('2026-10-01', 'b1.x', 'incorrect', 'none', 'retrieval'),
+  ], '2026-10-04');
+  assert.equal(sameDayA['b1.x'].level, 'needs-repair');
+  const sameDayB = deriveConcepts([
+    rec('2026-10-01', 'b1.x', 'incorrect', 'none', 'retrieval'),
+    rec('2026-10-01', 'b1.x', 'correct', 'none', 'application'),
+  ], '2026-10-04');
+  assert.equal(sameDayB['b1.x'].level, 'demonstrated');
+  const unsorted = deriveConcepts([
+    rec('2026-09-08', 'b1.y', 'correct', 'none', 'retrieval'),
+    rec('2026-09-01', 'b1.y', 'correct', 'none', 'application'),
+  ], '2026-10-04');
+  assert.equal(unsorted['b1.y'].level, 'retained');
+});
+
+test('lessonLadder keeps the old date ladder, tagged, and skips lessons that carry attempts', async () => {
+  const { lessonLadder } = await loadEvidenceModule();
+  const history = [
+    { date: '2026-09-26', type: 'done', title: 'B' },
+    { date: '2026-09-27', type: 'done', title: 'A' },
+    { date: '2026-09-28', type: 'assigned', title: 'C' },
+  ];
+  assert.deepEqual(lessonLadder(history, '2026-10-04', new Set(['2026-09-26'])), [
+    { date: '2026-09-27', title: 'A', type: 'done', rung: '1w', age_days: 7, source: 'lesson' },
+  ]);
+  assert.equal(lessonLadder(history, '2026-10-04', new Set()).length, 2, 'without the skip, 09-26 (age 8) is due too');
+});
+
+test('conceptIdsIn / unknownIdsOf: README registry, rustlings bin list, and null when unreadable', async () => {
+  const { conceptIdsIn, unknownIdsOf } = await loadEvidenceModule();
+  const readme = '| alpha-beta | `b1.alpha-beta` |\n| phase 2 `chess.p2` |\nprose b1.minimax without backticks\n`ds::Vec`';
+  assert.deepEqual([...conceptIdsIn(readme)].sort(), ['b1.alpha-beta', 'chess.p2']);
+  const concepts = { 'b1.alpha-beta': {}, 'b1.minimax': {}, 'rs.errors2': {}, 'rs.nope9': {} };
+  assert.deepEqual(unknownIdsOf(concepts, readme, ['errors1', 'errors2']), ['b1.minimax', 'rs.nope9']);
+  assert.equal(unknownIdsOf(concepts, null, ['errors2']), null, 'unreadable README = check did not run, not "no unknowns"');
+});
+
+test('isReviewDayOn is Friday in Asia/Ho_Chi_Minh, not UTC', async () => {
+  const { isReviewDayOn, REVIEW_DAY } = await loadEvidenceModule();
+  const tz = { timeZone: 'Asia/Ho_Chi_Minh' };
+  assert.equal(REVIEW_DAY, 'Friday');
+  assert.equal(isReviewDayOn(new Date('2026-10-09T02:00:00Z'), tz), true, '09:00 Friday local');
+  assert.equal(isReviewDayOn(new Date('2026-10-08T17:30:00Z'), tz), true, '00:30 Friday local, still Thursday in UTC');
+  assert.equal(isReviewDayOn(new Date('2026-10-11T02:00:00Z'), tz), false, 'Sunday is a normal day now');
+});
+
+test('payload carries derived concepts, unknown IDs, parse errors, and a tagged ladder', async () => {
+  const p = await runWorkflow();
+  assert.ok(p, 'agent() was never called');
+  assert.equal(p.concepts['b1.alpha-beta'].level, 'demonstrated');
+  assert.equal(p.concepts['b1.not-in-readme'].level, 'practicing');
+  assert.deepEqual(p.unknown_ids, ['b1.not-in-readme']);
+  assert.deepEqual(p.attempt_parse_errors, [{ date: '2026-08-01', line: '- id=garbage result=maybe' }]);
+  // 2026-08-01 + 7 days is long past, and overdue stays due.
+  assert.ok(
+    p.due_review.some((d) => d.source === 'concept' && d.id === 'b1.alpha-beta' && d.rung === '1w'),
+    `expected b1.alpha-beta on the concept ladder, got ${JSON.stringify(p.due_review)}`,
+  );
+  assert.ok(p.due_review.every((d) => d.source === 'concept' || d.source === 'lesson'));
+  assert.equal(p.is_review_day, p.weekday === 'Friday');
+});
+
+test('a lesson whose attempts list is all malformed stays on the date ladder', async () => {
+  // 2026-08-02 is 7 days before the pinned today: on the 1w rung unless wrongly skipped.
+  const p = await runWorkflow({
+    today: '2026-08-09',
+    cutoffExtraFrontMatter: 'attempts:\n  - id=garbage2 result=maybe\n',
+  });
+  assert.ok(p, 'agent() was never called');
+  assert.deepEqual(p.attempt_parse_errors.filter((e) => e.date === '2026-08-02'),
+    [{ date: '2026-08-02', line: '- id=garbage2 result=maybe' }], 'precondition: the list was read and rejected');
+  assert.ok(
+    p.due_review.some((d) => d.source === 'lesson' && d.date === '2026-08-02' && d.rung === '1w'),
+    `expected 2026-08-02 on the date ladder, got ${JSON.stringify(p.due_review)}`,
+  );
+  assert.ok(!p.due_review.some((d) => d.source === 'lesson' && d.date === '2026-08-01'),
+    'control: 08-01 has valid attempts, so it stays off the date ladder');
+});
+
+test('conceptLadder: due concepts only, most overdue first, tagged with rung label', async () => {
+  const { deriveConcepts, conceptLadder } = await loadEvidenceModule();
+  const c = deriveConcepts([
+    // First seen earliest, so insertion order alone would put it first.
+    rec('2026-07-01', 'b1.mid', 'partial', 'none', 'application'),
+    rec('2026-09-20', 'b1.mid', 'correct', 'none', 'application'), // due 09-27
+    rec('2026-09-30', 'b1.edge', 'correct', 'none', 'application'), // due 10-07
+    rec('2026-08-01', 'b1.over', 'correct', 'none', 'application'), // due 08-08
+    rec('2026-10-03', 'b1.later', 'correct', 'none', 'application'), // due 10-10, not due
+  ], '2026-10-04');
+  assert.deepEqual(conceptLadder(c), [
+    { id: 'b1.over', level: 'demonstrated', rung: '1w', due: '2026-08-08', source: 'concept' },
+    { id: 'b1.mid', level: 'demonstrated', rung: '1w', due: '2026-09-27', source: 'concept' },
+    { id: 'b1.edge', level: 'demonstrated', rung: '1w', due: '2026-10-07', source: 'concept' },
+  ]);
+});
+
+test('the real brief registers IDs for every B1 part 2 concept, every ds:: structure and chess phases 0-8', async () => {
+  const { conceptIdsIn } = await loadEvidenceModule();
+  const brief = await fs.readFile(path.join(here, '..', 'loopany/daily-lesson/README.md'), 'utf8');
+  const ids = conceptIdsIn(brief);
+  const expected = [
+    'b1.bitboards', 'b1.minimax', 'b1.alpha-beta', 'b1.memoization', 'b1.iterative-deepening',
+    'b1.move-ordering', 'b1.zobrist', 'b1.transposition-tables',
+    'b1.big-o', 'b1.arrays', 'b1.linked-lists', 'b1.stacks', 'b1.queues', 'b1.hashing',
+    'b1.trees-bst', 'b1.heaps', 'b1.graphs', 'b1.sorting', 'b1.recursion',
+    'ds.vec', 'ds.stack', 'ds.binary-heap', 'ds.hashmap', 'ds.queue', 'ds.linked-list', 'ds.bst', 'ds.graph',
+    ...Array.from({ length: 9 }, (_, n) => `chess.p${n}`),
+  ];
+  assert.deepEqual(expected.filter((id) => !ids.has(id)), []);
+});
+
+test('the prompt names Friday and the new payload keys, and no longer says Sunday', async () => {
+  const src = await fs.readFile(SRC, 'utf8');
+  assert.ok(src.search(/^await agent\(/m) > 0, 'could not find the agent call');
+  const prompt = src.slice(src.search(/^await agent\(/m));
+  for (const s of ['FRIDAY', 'concepts', 'unknown_ids', 'attempt_parse_errors', 'needs-repair', 'Attempt records', 'question_ids', 'review_id_mismatches']) {
+    assert.ok(prompt.includes(s), `prompt is missing ${s}`);
+  }
+  assert.ok(!/Sunday|SUNDAY/.test(prompt), 'prompt still mentions Sunday');
+});
+
+test('lessonLadder dedupes held copies of one topic per rung, keeping the earliest serve', async () => {
+  const { lessonLadder } = await loadEvidenceModule();
+  const history = [
+    { date: '2026-09-26', type: 'skipped', title: '"Lesson 44 · Rust: errors4 · DSA: Zobrist hashing"' },
+    { date: '2026-09-27', type: 'skipped', title: '"Lesson 45 · Rust: errors4 · DSA: Zobrist hashing"' },
+    { date: '2026-09-28', type: 'done', title: '"Lesson 46 · Rust: errors5 · DSA: iterative deepening"' },
+  ];
+  const due = lessonLadder(history, '2026-10-04', new Set());
+  const zob = due.filter((d) => d.title.includes('Zobrist'));
+  assert.equal(zob.length, 1, 'two held copies of one topic on the same rung count once');
+  assert.equal(zob[0].date, '2026-09-26', 'the earliest serve wins');
+  assert.equal(due.filter((d) => d.title.includes('iterative')).length, 1, 'a different topic is kept');
+  assert.ok(due.every((d) => d.source === 'lesson'));
+});
+
+test('payload cargo carries why (null on a normal run)', async () => {
+  const p = await runWorkflow();
+  assert.ok('why' in p.cargo, 'cargo.why missing from the payload');
+});
+
+test('the prompt explains cargo.why and the done|partial preference for lesson-ladder entries', async () => {
+  const src = await fs.readFile(SRC, 'utf8');
+  const prompt = src.slice(src.search(/^await agent\(/m));
+  for (const s of ['cargo.why', 'done|partial', 'held copies', 'Drop a slot rather than']) {
+    assert.ok(prompt.includes(s), `prompt is missing ${s}`);
+  }
+});
+
+test('the prompt orders concept entries most-overdue-first and names lesson entries by what they lack', async () => {
+  const src = await fs.readFile(SRC, 'utf8');
+  const prompt = src.slice(src.search(/^await agent\(/m));
+  for (const s of ['take the most overdue first', 'lessons without attempt records']) {
+    assert.ok(prompt.includes(s), `prompt is missing ${s}`);
+  }
+  assert.ok(!prompt.includes('lessons from before attempt records existed'), 'old wording still present');
+});
+
+test('isReviewLesson: Friday by date, old Sunday reviews by title, never throws', async () => {
+  const { isReviewLesson } = await loadEvidenceModule();
+  const tz = { timeZone: 'Asia/Ho_Chi_Minh' };
+  assert.equal(isReviewLesson('2026-10-09', '"Lesson 53 · …"', tz), true, 'a Friday');
+  assert.equal(isReviewLesson('2026-09-13', '"Review week 6 · Rust + DSA"', tz), true, 'a pre-cutover Sunday review, by title');
+  assert.equal(isReviewLesson('2026-10-11', '"Lesson 54 · …"', tz), false, 'Sunday is a normal day now');
+  assert.equal(isReviewLesson('2026-13-45', null, tz), false, 'impossible date: false, no throw');
+});
+
+test('questionIdsOf: tags in order, de-duplicated, registered namespaces only', async () => {
+  const { questionIdsOf } = await loadEvidenceModule();
+  const text = '**Q1** (id: rs.errors4) …\n**Q2** (id:b1.zobrist) …\n**Q3** (id: foo.bar) …\n**Q4** no tag\n'
+    + 'worked: Q1 (id: rs.errors4)\n';
+  assert.deepEqual(questionIdsOf(text), ['rs.errors4', 'b1.zobrist']);
+});
+
+test('reviewIdMismatchesOf flags a retrieval whose id was not a question tag, only on review lessons', async () => {
+  const { reviewIdMismatchesOf } = await loadEvidenceModule();
+  const tz = { timeZone: 'Asia/Ho_Chi_Minh' };
+  const text = '**Q1** (id: rs.errors4) …\n**Q2** (id: b1.zobrist) …\n';
+  const attempts = [
+    { id: 'rs.errors4', result: 'correct', help: 'none', kind: 'retrieval' },
+    { id: 'b1.alpha-beta', result: 'correct', help: 'none', kind: 'retrieval' },
+    { id: 'ds.graph', result: 'partial', help: 'none', kind: 'application' },
+  ];
+  assert.deepEqual(reviewIdMismatchesOf('2026-10-09', '"Lesson 53"', text, attempts, tz), [{ date: '2026-10-09', id: 'b1.alpha-beta' }]);
+  assert.deepEqual(reviewIdMismatchesOf('2026-10-08', '"Lesson 52"', text, attempts, tz), [], 'not a review lesson');
+});
+
+test('payload hands the grading run is_review_day, question_ids and review_id_mismatches', async () => {
+  const p = await runWorkflow();
+  assert.equal(typeof p.prev_lesson.is_review_day, 'boolean');
+  assert.ok(Array.isArray(p.prev_lesson.question_ids));
+  assert.ok(Array.isArray(p.review_id_mismatches));
+});

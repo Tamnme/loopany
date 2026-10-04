@@ -13,7 +13,7 @@ The lesson loop finishes itself when `rust-dsa` plays legal chess — perft-veri
 a transposition table, and a terminal binary to play a full game against — built on hand-written
 `ds::` structures rather than std's. (Until 2026-08-09 the finish line was an abstract
 8-structure library; the brief records why chess replaced it. Five of the eight structures are
-still earned along the way, the rest on Sundays.)
+still earned along the way, the rest on Fridays.)
 
 ## How a run works
 
@@ -53,10 +53,10 @@ hand-edited source.
 ## Working on the workflow
 
 ```bash
-cd loop-src && node --test          # 33 tests, all offline except cargo/clippy
+cd loop-src && node --test          # 62 tests, all offline except cargo/clippy
 ```
 
-**As of 2026-08-12, 3 of the 33 fail on a clock, not a regression** — see the fixture bullet
+**As of 2026-08-12, 3 of the tests (now 3 of 62) fail on a clock, not a regression** — see the fixture bullet
 below. Compare against that baseline before assuming you broke something.
 
 Deploy only through the dry-run gate — the loop fires unattended, and a broken workflow costs a
@@ -84,7 +84,8 @@ These are not style preferences. Each one has cost a lesson day or a silent bug.
   pass zero.
 - **Absolute paths only.** Runs start in an unrelated empty directory; nothing may depend on `cwd`.
 - **Never write inside `loopany/`.** It is synced content — no `cargo`, no build output, no
-  checkouts.
+  checkouts. The briefs (`loopany/*/README.md`) are the exception: they are the loops' contracts
+  and are edited here like source.
 - **Never touch mtimes under `rustlings/exercises/`.** They decide which exercises get reviewed;
   touching one makes stale work look new.
 - **The fixture must mirror production's shape, not a convenient one.** Most bugs found while

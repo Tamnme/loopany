@@ -32,15 +32,176 @@ const remainingMs = (reserve = BASE_RESERVE_MS) =>
 const base = '/Users/tamnm/code/personal';
 const lessonsDir = base + '/loopany/daily-lesson/lessons';
 
+// Evidence levels: per-concept attempt records in lesson front-matter, and the levels and
+// review rungs derived from them (docs/superpowers/specs/2026-10-04-evidence-levels-design.md;
+// the idea is Gnos's learner-tracking evidence model). Pure functions, no I/O, never throw —
+// the test harness slices this block out by its two marker comments, so keep them intact.
+const REVIEW_DAY = 'Friday';
+const RUNGS = [{ rung: '1w', days: 7 }, { rung: '4w', days: 28 }, { rung: '12w', days: 84 }];
+const DUE_SLACK_DAYS = 3;
+const ID_RE = /^(rs|b1|chess|ds)\.[a-z0-9_-]+$/;
+const RESULTS = ['correct', 'partial', 'incorrect'];
+const HELPS = ['none', 'hint'];
+const KINDS = ['application', 'retrieval'];
+
+const isReviewDayOn = (date, tz) =>
+  date.toLocaleDateString('en-US', { ...tz, weekday: 'long' }) === REVIEW_DAY;
+
+const daysBetween = (a, b) => (Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000;
+const addDays = (d, n) => new Date(Date.parse(d + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+const isDate = (d) => Number.isFinite(Date.parse(d + 'T00:00:00Z'));
+
+// Front-matter only: an `attempts:` line in the lesson body is prose, not a record. CRLF is
+// normalised because lesson-web.py rewrites these files with the owner's answers.
+const parseAttempts = (text) => {
+  const attempts = [];
+  const errors = [];
+  const fm = /^---\n([\s\S]*?)\n---/.exec(text.replace(/\r\n/g, '\n'));
+  const lines = fm ? fm[1].split('\n') : [];
+  const start = lines.findIndex((l) => /^attempts:/.test(l));
+  if (start < 0) return { present: false, attempts, errors };
+  // An inline value (`attempts: [ … ]`) is not the contract: present, and an error, so it shows
+  // up in attempt_parse_errors instead of reading as "no records".
+  if (!/^attempts:\s*$/.test(lines[start])) errors.push(lines[start].trim());
+  for (const line of lines.slice(start + 1)) {
+    if (!/^\s*-/.test(line)) break; // the next top-level key ends the list; YAML allows `- ` at col 0
+    const r = {};
+    // One pair of surrounding quotes is YAML string habit, not part of the record.
+    const item = line.trim().replace(/^-\s*/, '').replace(/^(["'])(.*)\1$/, '$2');
+    // `key=value` is the contract; `key: value` is accepted because an agent copying YAML habits
+    // would otherwise turn every record into a parse error.
+    for (const m of item.matchAll(/(\w+)\s*[=:]\s*([^\s,]+)/g)) r[m[1]] = m[2];
+    if (ID_RE.test(r.id || '') && RESULTS.includes(r.result) && HELPS.includes(r.help) && KINDS.includes(r.kind)) {
+      attempts.push({ id: r.id, result: r.result, help: r.help, kind: r.kind });
+    } else {
+      errors.push(line.trim());
+    }
+  }
+  return { present: true, attempts, errors };
+};
+
+// Level of each concept = its latest attempt, read against whether it was EVER cleanly
+// correct before. The rung climbs only on a clean retrieval, so a hint or an application
+// never moves a concept further from review. Sort is stable: same-date records keep file order.
+const deriveConcepts = (records, today) => {
+  const out = {};
+  const prior = {};
+  // An impossible date (`2026-13-45.md`) would make addDays throw a RangeError; skip it.
+  const ordered = records.filter((r) => isDate(r.date)).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  for (const r of ordered) {
+    const c = out[r.id] || (out[r.id] = { level: null, rung: 0, last_date: null });
+    const clean = r.result === 'correct' && r.help === 'none';
+    if (clean && r.kind === 'retrieval' && prior[r.id]) {
+      c.level = 'retained';
+      c.rung = Math.min(c.rung + 1, RUNGS.length - 1);
+    } else if (clean) {
+      c.level = 'demonstrated';
+    } else if (r.result === 'incorrect' && prior[r.id]) {
+      c.level = 'needs-repair';
+    } else {
+      c.level = 'practicing';
+    }
+    if (clean) prior[r.id] = true;
+    c.last_date = r.date;
+  }
+  for (const c of Object.values(out)) {
+    c.rung_label = RUNGS[c.rung].rung;
+    c.due = addDays(c.last_date, RUNGS[c.rung].days);
+    // Overdue stays due: the due date only moves on a new attempt, so a strict window would
+    // drop a concept for good after one failed review-day run.
+    c.is_due = daysBetween(today, c.due) <= DUE_SLACK_DAYS;
+  }
+  return out;
+};
+
+// The pre-cutover ladder, unchanged: every graded lesson comes back at ~1, ~4 and ~12 weeks.
+// Windows are ±3 days so a rung can't be missed by landing between two review days. Lessons
+// that carry attempt records are skipped — their concepts are on the concept ladder instead.
+//
+// A held day copies the previous weekday lesson verbatim and only bumps the lesson NUMBER, so
+// the ladder sees N separate "lessons" that are one concept served once. Measured 2026-09-17:
+// Sunday 09-20's 1w rung was SIX byte-identical held copies of the 08-27 Zobrist lesson plus one
+// skipped Sunday — 14 due items of which 10 carried no information. The absence makes it worse
+// weekly, because today's held copies reach the 4w rung a month from now.
+// Dedupe on the topic (the title with its `Lesson N ·` / `Review week N ·` prefix stripped),
+// per rung, keeping the EARLIEST date — the day that topic was actually served. Purely
+// mechanical; which of the survivors is worth asking stays the run's judgment.
+const topicOf = (title) =>
+  (title || '').replace(/^"?(?:Lesson|Review week)\s+\d+\s*·\s*/, '').trim();
+const lessonLadder = (history, today, skip) => {
+  const dueSeen = new Map();
+  // Sorted by date ascending so the first hit for a key is the earliest serve, whatever the
+  // caller's order.
+  const sorted = [...history].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  for (const h of sorted) {
+    if (h.type === 'assigned' || skip.has(h.date)) continue; // never taught-and-graded yet
+    if (!isDate(h.date)) continue; // an impossible file date is not on any rung
+    const age = daysBetween(h.date, today);
+    for (const r of RUNGS) {
+      if (Math.abs(age - r.days) <= DUE_SLACK_DAYS) {
+        const key = r.rung + '\u0000' + topicOf(h.title);
+        if (dueSeen.has(key)) continue;
+        dueSeen.set(key, { date: h.date, title: h.title, type: h.type, rung: r.rung, age_days: age, source: 'lesson' });
+      }
+    }
+  }
+  return [...dueSeen.values()];
+};
+
+// The concept half of due_review: due concepts only, most overdue first (ISO dates sort as text).
+const conceptLadder = (concepts) =>
+  Object.entries(concepts)
+    .filter(([, c]) => c.is_due)
+    .map(([id, c]) => ({ id, level: c.level, rung: c.rung_label, due: c.due, source: 'concept' }))
+    .sort((a, b) => (a.due < b.due ? -1 : a.due > b.due ? 1 : 0));
+
+// The README is the ID registry: every ID written in backticks. rustlings IDs are not listed
+// there — `rs.<name>` is valid when <name> is in rustlings' own bin list.
+const conceptIdsIn = (readme) =>
+  new Set([...readme.matchAll(/`((?:rs|b1|chess|ds)\.[a-z0-9_-]+)`/g)].map((m) => m[1]));
+
+// null means the README could not be read, so the check never ran — that must not read as
+// "no unknown IDs".
+const unknownIdsOf = (concepts, readme, binNames) => {
+  if (readme === null) return null;
+  const known = conceptIdsIn(readme);
+  return Object.keys(concepts).filter(
+    (id) => !known.has(id) && !(id.startsWith('rs.') && binNames.includes(id.slice(3))),
+  );
+};
+// A lesson is a review-day lesson if its title says so (`Review week N ·`) or its date fell on
+// REVIEW_DAY. The title matters: review lessons before 2026-10-04 were Sundays. Noon UTC is the
+// same calendar day in Asia/Ho_Chi_Minh, so the weekday is read in the owner's zone.
+const isReviewLesson = (date, title, tz) =>
+  /^"?Review week/.test(title || '') ||
+  (isDate(date) && isReviewDayOn(new Date(date + 'T12:00:00Z'), tz));
+
+// The `(id: …)` tags a review-day run writes next to each question, in order, de-duplicated.
+// Only registered namespaces count — anything else is not an ID.
+const questionIdsOf = (text) => [
+  ...new Set([...text.matchAll(/\(id:\s*((?:rs|b1|chess|ds)\.[a-z0-9_-]+)\s*\)/g)].map((m) => m[1])),
+];
+
+// Retrieval attempts on a review-day lesson whose id is not one of that lesson's question tags —
+// the grading run inferred an ID instead of copying it.
+const reviewIdMismatchesOf = (date, title, text, attempts, tz) => {
+  if (!isReviewLesson(date, title, tz)) return [];
+  const tagged = new Set(questionIdsOf(text));
+  return attempts
+    .filter((a) => a.kind === 'retrieval' && !tagged.has(a.id))
+    .map((a) => ({ date, id: a.id }));
+};
+// End evidence levels.
+
 // Today in the owner's timezone. The run fires at 09:00 Asia/Saigon (cron `0 9 * * *`);
 // Asia/Ho_Chi_Minh is the same zone, kept here as the canonical IANA name.
 const tz = { timeZone: 'Asia/Ho_Chi_Minh' };
 const now = new Date();
 const today = now.toLocaleDateString('en-CA', tz);
-// Sunday = review day: no new concept, a test + a small project instead. Weekday name is
+// REVIEW_DAY (Friday) = no new concept, a test + a small project instead. Weekday name is
 // computed in the owner's zone, not UTC, or the boundary run flips to the wrong day.
 const weekday = now.toLocaleDateString('en-US', { ...tz, weekday: 'long' });
-const isReviewDay = weekday === 'Sunday';
+const isReviewDay = isReviewDayOn(now, tz);
 
 let files = [];
 try {
@@ -54,6 +215,29 @@ const titleOf = (text) => ((/^title:\s*(.+)$/m.exec(text) || [])[1] || '').trim(
 const answerOf = (text) =>
   ((/^#{2,3} My answer\s*\n([\s\S]*?)(?=^#{1,3} )/m.exec(text) || [])[1] || '').trim();
 
+// The lesson file's `metrics: k=v k=v` front-matter line — the loop's own store for the four
+// CUMULATIVE numbers (`day`, `chess_phase`, `dsa_topics`, `structs_done`) that no run can derive
+// from disk. It exists because the obvious store, the host cursor, does NOT work here: `prev` is
+// the workflow's OWN returned `state` (host dist/workflow.js:11, runner.js:265 `cursor =
+// wf.result.state`), and the escalation path below ends `return {}`, so every agent day persists
+// an UNDEFINED cursor. The hold gate keyed on `prev` was therefore chicken-and-egg by
+// construction — it could only fire the day after a hold day had already fired, so it never fired
+// at all (four eligible days, 2026-09-08 → 09-11, all woke the agent at ~$1.50 apiece).
+// Returning a cursor from the escalation path would fix `prev`, but the cursor is also what the
+// server reads as the run's `state`, so it risks clobbering the metrics the agent reports on a day
+// the owner actually shows up and `chess_phase` moves — the one day being wrong matters most.
+// The lesson file is the medium both the agent and this workflow already read and write, so the
+// numbers live there instead: the agent writes the line every day (Spec, *Front-matter
+// convention*), a hold day below carries it forward, and a missing/garbled line simply declines
+// the hold and wakes the agent. Null = no line = decline.
+const metricsOf = (text) => {
+  const line = (/^metrics:\s*(.+)$/m.exec(text) || [])[1];
+  if (!line) return null;
+  const out = {};
+  for (const m of line.matchAll(/([a-z_]+)=(-?\d+(?:\.\d+)?)/g)) out[m[1]] = Number(m[2]);
+  return out;
+};
+
 // Duplicate same-day wake: today's lesson is already issued and still `assigned`,
 // so there is nothing to grade and nothing to write. Silent tick, no agent.
 if (files.includes(today + '.md')) {
@@ -64,9 +248,21 @@ if (files.includes(today + '.md')) {
 // Every lesson's date + graded type + title — the agent's `ls lessons/` opener, done once
 // here. `title` is what a review day builds its questions from without re-reading the week.
 const history = [];
+const attemptRecords = [];
+const attemptParseErrors = [];
+const reviewIdMismatches = [];
+const datesWithAttempts = new Set();
 for (const f of files) {
   const text = await fs.readFile(lessonsDir + '/' + f, 'utf8');
-  history.push({ date: f.replace('.md', ''), type: typeOf(text), title: titleOf(text) });
+  const date = f.replace('.md', '');
+  history.push({ date, type: typeOf(text), title: titleOf(text) });
+  const parsed = parseAttempts(text);
+  reviewIdMismatches.push(...reviewIdMismatchesOf(date, titleOf(text), text, parsed.attempts, tz));
+  // Only real records move a lesson off the date ladder — an empty or all-malformed list would
+  // otherwise drop it from review with nothing on the concept ladder to replace it.
+  if (parsed.attempts.length > 0) datesWithAttempts.add(date);
+  for (const a of parsed.attempts) attemptRecords.push({ date, ...a });
+  for (const line of parsed.errors) attemptParseErrors.push({ date, line });
 }
 
 // Week 1 is the first 7 days from the first lesson ever. Only used to label a review day.
@@ -75,21 +271,15 @@ const weekNumber = history.length
   ? Math.floor((dnum(today) - dnum(history[0].date)) / 7) + 1
   : 1;
 
-// The spaced-repetition ladder, derived — EVERY lesson comes back at ~1, ~4 and ~12 weeks,
-// not just the ones answered wrong. A review day draws its questions from this; the
-// wrong-answer queue in the task file is only the exception list on top of it.
-// Windows are ±3 days so a rung can't be missed by landing between two Sundays.
-const RUNGS = [{ rung: '1w', days: 7 }, { rung: '4w', days: 28 }, { rung: '12w', days: 84 }];
-const dueReview = [];
-for (const h of history) {
-  if (h.type === 'assigned') continue; // never taught-and-graded yet
-  const age = dnum(today) - dnum(h.date);
-  for (const r of RUNGS) {
-    if (Math.abs(age - r.days) <= 3) {
-      dueReview.push({ date: h.date, title: h.title, type: h.type, rung: r.rung, age_days: age });
-    }
-  }
-}
+// The spaced-repetition ladder, derived. Concepts with attempt records ride the concept
+// ladder (rung climbs only on a clean retrieval); lessons without attempt records
+// keep the old date ladder. A review day draws its questions from both; the wrong-answer
+// queue in the task file is only the exception list on top of it.
+const concepts = deriveConcepts(attemptRecords, today);
+const dueReview = [
+  ...lessonLadder(history, today, datesWithAttempts),
+  ...conceptLadder(concepts),
+];
 
 // Yesterday's lesson — the one this run grades.
 let prevLesson = null;
@@ -101,6 +291,9 @@ if (prevName) {
     date: prevName.replace('.md', ''),
     type: typeOf(text),
     track_b_answer: answerOf(text), // empty string = owner never filled it in = B skipped
+    metrics: metricsOf(text), // null = the line is missing; the agent must write one today
+    is_review_day: isReviewLesson(prevName.replace('.md', ''), titleOf(text), tz),
+    question_ids: questionIdsOf(text),
     text,
   };
 }
@@ -175,6 +368,16 @@ try {
 } catch (e) {
   binMap = {}; // manifest unreadable — feedback degrades to nothing, never to a failed run
 }
+
+// The brief is the concept-ID registry. Unreadable → null, which the agent must read as
+// "the check did not run", never as "no unknown IDs".
+let briefText = null;
+try {
+  briefText = await fs.readFile(base + '/loopany/daily-lesson/README.md', 'utf8');
+} catch (e) {
+  briefText = null;
+}
+const unknownIds = unknownIdsOf(concepts, briefText, Object.keys(binMap));
 
 // The next exercises in rustlings' OWN order — the one thing every run went hunting for by
 // hand. Run 7 spent five shell commands on it (`ls exercises/`, greps over `info.toml`, then
@@ -276,6 +479,198 @@ if (since > 0) {
   }
   stamped.sort((a, b) => b.mtime - a.mtime);
   selected = stamped.slice(0, REVIEW_CAP).map((s) => s.name);
+}
+
+const walkRs = async (dir, rel) => {
+  const out = [];
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch (e) {
+    return out; // directory absent (no tests/ yet) — not an error, just nothing to hand over
+  }
+  for (const ent of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    const r = rel + '/' + ent.name;
+    if (ent.isDirectory()) out.push(...(await walkRs(dir + '/' + ent.name, r)));
+    else if (ent.name.endsWith('.rs')) out.push(r);
+  }
+  return out;
+};
+
+const rsPaths = [
+  ...(await walkRs(base + '/rust-dsa/src', 'src')),
+  ...(await walkRs(base + '/rust-dsa/tests', 'tests')),
+];
+
+// Did the OWNER open the chess crate since the last lesson was issued? This is the exact
+// mirror of `reviewed_exercises` for Track A's rustlings half, and it answers the one question
+// six days of shrinking the chess step never asked: is the step too big, or is the file never
+// opened at all? On 2026-08-20 every .rs under the crate still carried an mtime of 08-18 09:01
+// — the RUN's own write — while rustlings advanced daily, so a one-line `piece_at` had been
+// re-assigned three times to a file nobody had opened. Shrinking cannot fix that; only the
+// brief's chess-half absence rule can, and it keys on this flag.
+//
+// The run's own crate edits are excluded BY CONSTRUCTION, not by filtering: `since` is the
+// PREVIOUS lesson file's birthtime, and the brief's step order writes the day's failing test
+// (step 2) BEFORE the lesson file (step 3), so a run-authored edit always lands before the
+// cutoff it will be compared against tomorrow. Keep that order — inverting it turns every
+// carried-forward day into a false "owner touched it".
+//
+// Stats every walked path, deliberately independent of the RS_TOTAL_CAP read loop below: a
+// file dropped for size still counts as touched, and this must never under-report absence.
+const rsTouched = [];
+if (since > 0) {
+  for (const rel of rsPaths) {
+    try {
+      const st = await fs.stat(base + '/rust-dsa/' + rel);
+      if (st.mtimeMs > since) rsTouched.push(rel);
+    } catch (e) {
+      continue; // file gone — skip it, never fail the run
+    }
+  }
+}
+
+// The Spec's "empty room" test, computed once. THREE live rules key on it — whether a blank
+// `### My answer` counts as the owner's decision or as an empty room, whether to re-ask the
+// crate Q1, and (with consecutive_skips) whether a zero day is absence at all — and the runs of
+// 08-24, 08-25 and 08-26 each re-derived it by hand from these same three arrays. It is a pure
+// OR over data already gathered above, so it costs nothing and stops three prose restatements
+// of one boolean from drifting apart.
+//
+// "rustlings.done advanced" is deliberately NOT a fourth signal: an exercise only enters `done`
+// by being written AND executed by the watcher, so any advance since the cutoff already shows up
+// in reviewed_exercises. Adding it would need a cursor in `prev` and would double-count.
+const presenceSignals = [];
+if (selected.length) presenceSignals.push('reviewed_exercises');
+if (nextExercises.some((e) => e.owner_modified)) presenceSignals.push('owner_modified');
+if (rsTouched.length) presenceSignals.push('rust_dsa.owner_touched');
+const presence = { any: presenceSignals.length > 0, signals: presenceSignals };
+
+// ─── Hold day: a confirmed absence re-serves the last weekday lesson, no agent ───
+//
+// Runs 30–36 (2026-08-29 → 09-07) each wrote a lesson whose body was BYTE-IDENTICAL to the day
+// before — `diff lessons/2026-09-05.md lessons/2026-09-07.md` changes only the front matter and
+// the opening note. That is not a defect: the Spec MANDATES it ("hold the step size steady",
+// "don't invent variation to feel productive"). But it cost ~$1.40 of agent per copy, and
+// copying a file is not judgment. So on a day where every signal says nobody was here, the copy
+// happens here and the agent is never woken.
+//
+// The gate is deliberately narrow — it fires only when ALL of:
+//   · not Friday — review day is real work (a standalone ds:: structure + a five-question test)
+//   · presence.any false — no rustlings keystroke, no crate touch, nothing
+//   · consecutive_skips >= 3 — the Spec's own "Absence, not difficulty" threshold
+//   · gap_days 0 — a failed run has to be explained in the opening note, which needs the agent
+//   · yesterday still `assigned` with an empty answer box — nothing to grade but a skip
+//   · yesterday's front matter carries a parseable `metrics:` line (see below)
+// Anything else — a return, a Friday, an outage, a partly-filled box — falls through to the
+// agent unchanged. Friday therefore guarantees at least one fully-agent run per week, and that
+// is where the brief's Timeline and Position get their range entry for the held stretch.
+//
+// The `metrics:` check is the safety interlock, not a formality. `chess_phase`, `dsa_topics` and
+// `structs_done` are cumulative and NOT derivable from the filesystem, so without them this path
+// would have to report a regression the Spec explicitly forbids. It declines and lets the agent
+// run — which is also how the very first hold day after a `metrics:`-less lesson behaves, and how
+// the loop self-heals if a run ever forgets the line: one agent day, which rewrites it.
+// Do NOT "fix" this back to reading `prev` — see metricsOf above for why that cannot work.
+const prevMetrics = prevLesson ? prevLesson.metrics : null;
+const holdEligible =
+  !isReviewDay &&
+  !presence.any &&
+  consecutiveSkips >= 3 &&
+  gapDays === 0 &&
+  prevLesson &&
+  prevLesson.type === 'assigned' &&
+  prevLesson.track_b_answer === '' &&
+  prevMetrics &&
+  ['day', 'chess_phase', 'dsa_topics', 'structs_done'].every((k) => Number.isFinite(prevMetrics[k]));
+
+if (holdEligible) {
+  // Carry forward the last WEEKDAY lesson, which is not always yesterday: a Friday review file
+  // teaches a standalone ds:: structure and a five-question test and must never become the next day's
+  // lesson. Grading still applies to prev_lesson, whichever kind it was.
+  const weekdayHistory = history.filter((h) => h.date < today && !/^"?Review week/.test(h.title || ''));
+  const srcEntry = weekdayHistory[weekdayHistory.length - 1] || null;
+  let held = null;
+  if (srcEntry) {
+    const srcText = await fs.readFile(lessonsDir + '/' + srcEntry.date + '.md', 'utf8');
+    const srcLines = srcText.split('\n');
+    // A lesson file is: `---` front matter `---` / `# Lesson N` + opening note / `---` / body.
+    // The THIRD bare `---` opens the immutable body; everything above it is rewritten below.
+    let seen = 0;
+    let bodyAt = -1;
+    for (let i = 0; i < srcLines.length; i++) {
+      if (srcLines[i] === '---' && ++seen === 3) { bodyAt = i; break; }
+    }
+    if (bodyAt > 0) held = { srcLines, bodyAt, title: (srcEntry.title || '').replace(/^"|"$/g, '') };
+  }
+  // An unexpected file shape is a reason to wake the agent, never to write a broken lesson.
+  if (held) {
+    const day = prevMetrics.day + 1;
+    const title = held.title.replace(/Lesson \d+/, 'Lesson ' + day);
+    const text = [
+      '---',
+      'type: assigned',
+      'title: ' + JSON.stringify(title),
+      'date: ' + today,
+      // Carried forward so a SECOND consecutive hold day still has its interlock — without this
+      // line the gate would fire exactly once per absence stretch and then decline forever.
+      // Nothing moved (that is what presence.any false means), so carrying is also correct.
+      'metrics: day=' + day +
+        ' chess_phase=' + prevMetrics.chess_phase +
+        ' dsa_topics=' + prevMetrics.dsa_topics +
+        ' structs_done=' + prevMetrics.structs_done,
+      '---',
+      '',
+      '# Lesson ' + day,
+      '',
+      '*Track A ~8 min · Track B ~7 min.*',
+      '',
+      '> Nothing has moved since the last lesson — no exercise run, no crate opened, the answer',
+      '> box still empty. **Nothing is owed and nothing has stacked up**: today is the normal',
+      '> size, and both tracks are held exactly where you left them. Pick it up whenever.',
+      '',
+      ...held.srcLines.slice(held.bodyAt),
+    ].join('\n');
+
+    // Grade yesterday first. No presence means neither track landed, which is `skipped` under
+    // the Spec's own two grading rules — the same verdict the last eight agent runs reached.
+    await fs.writeFile(
+      lessonsDir + '/' + prevName,
+      prevLesson.text.replace(/^type:\s*assigned[ \t]*$/m, 'type: skipped'),
+      'utf8',
+    );
+    await fs.writeFile(lessonsDir + '/' + today + '.md', text, 'utf8');
+
+    // Step 5 of the brief — a lesson nobody sees is a skipped day. Detached and unref'd because
+    // lesson-web.py serves until killed while this subprocess is about to exit.
+    //
+    // Both paths are absolute on purpose: the workflow subprocess runs with an ALLOWLISTED env,
+    // so neither $HOME nor a full $PATH can be assumed (the LaunchAgent plist sets PATH only).
+    // lesson-web.py is stdlib-only, so the system interpreter is enough.
+    try {
+      const { spawn } = await import('node:child_process');
+      spawn('/usr/bin/python3', ['/Users/tamnm/.claude/tools/lesson-web.py', '--open'], {
+        detached: true,
+        stdio: 'ignore',
+      }).unref();
+    } catch (e) {
+      // Delivery failed — the file is written regardless and tomorrow's run still sees it.
+    }
+
+    return {
+      message: title + ' — held, yesterday A ✗ B ✗',
+      state: {
+        day,
+        words: text.split(/\s+/).filter(Boolean).length,
+        streak: 0,
+        crate_touched: 0,
+        rustlings_done: doneExercises.length,
+        chess_phase: prevMetrics.chess_phase,
+        dsa_topics: prevMetrics.dsa_topics,
+        structs_done: prevMetrics.structs_done,
+      },
+    };
+  }
 }
 
 // Scoped clippy: every exercise is its own bin target, so this lints one 5-line file, not
@@ -387,12 +782,13 @@ const clippyFor = async (name) => {
 const CARGO_TEST_HARD_CAP_MS = 8000;
 // Held back on top of BASE_RESERVE_MS so the feedback-assembly loop below still has a floor of
 // budget to work with even in the worst case where cargo test uses every millisecond it's given.
-// cargo test is GRADING data (it judges Track B and Sunday review days) and gets first claim on
+// cargo test is GRADING data (it judges Track B and Friday review days) and gets first claim on
 // the budget; the feedback loop is a nicety and gets only what's left — never the reverse.
 const FEEDBACK_LOOP_RESERVE_MS = 3000;
 
 let out = '';
 let cargoOk = false;
+let cargoWhy = null; // why ok is false when it isn't a compile failure: 'timeout' | 'skipped'
 const cargoBudgetMs = Math.min(CARGO_TEST_HARD_CAP_MS, remainingMs(BASE_RESERVE_MS + FEEDBACK_LOOP_RESERVE_MS));
 // child_process's `timeout: 0` means NO TIMEOUT, not "no time left" — passing 0 or a negative
 // number here would silently reopen the exact bug this closes (an unbounded call that can blow
@@ -419,7 +815,14 @@ if (cargoBudgetMs > 0) {
     // `test result:` line at all, so it still lands on ok:false — which is exactly right, because
     // that is the case where grading really is blind.
     cargoOk = /^test (?:\S+ \.\.\. (?:ok|FAILED)|result:)/m.test(out);
+    // 2026-09-25: target/ had vanished, so the prefetch hit a cold build right after a wake from
+    // sleep, got killed at its budget, and handed over ok:false with every field empty — which
+    // reads exactly like a crate that won't compile. Name the kill so the run knows it's a cold
+    // build, not broken code.
+    if (e.killed || e.signal) cargoWhy = 'timeout';
   }
+} else {
+  cargoWhy = 'skipped';
 }
 
 const passing = [...out.matchAll(/^test (\S+) \.\.\. ok$/gm)].map((m) => m[1]);
@@ -475,70 +878,6 @@ for (const name of selected) {
 const RS_PER_FILE_CAP = 8000;
 const RS_TOTAL_CAP = 48000;
 
-const walkRs = async (dir, rel) => {
-  const out = [];
-  let entries;
-  try {
-    entries = await fs.readdir(dir, { withFileTypes: true });
-  } catch (e) {
-    return out; // directory absent (no tests/ yet) — not an error, just nothing to hand over
-  }
-  for (const ent of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    const r = rel + '/' + ent.name;
-    if (ent.isDirectory()) out.push(...(await walkRs(dir + '/' + ent.name, r)));
-    else if (ent.name.endsWith('.rs')) out.push(r);
-  }
-  return out;
-};
-
-const rsPaths = [
-  ...(await walkRs(base + '/rust-dsa/src', 'src')),
-  ...(await walkRs(base + '/rust-dsa/tests', 'tests')),
-];
-
-// Did the OWNER open the chess crate since the last lesson was issued? This is the exact
-// mirror of `reviewed_exercises` for Track A's rustlings half, and it answers the one question
-// six days of shrinking the chess step never asked: is the step too big, or is the file never
-// opened at all? On 2026-08-20 every .rs under the crate still carried an mtime of 08-18 09:01
-// — the RUN's own write — while rustlings advanced daily, so a one-line `piece_at` had been
-// re-assigned three times to a file nobody had opened. Shrinking cannot fix that; only the
-// brief's chess-half absence rule can, and it keys on this flag.
-//
-// The run's own crate edits are excluded BY CONSTRUCTION, not by filtering: `since` is the
-// PREVIOUS lesson file's birthtime, and the brief's step order writes the day's failing test
-// (step 2) BEFORE the lesson file (step 3), so a run-authored edit always lands before the
-// cutoff it will be compared against tomorrow. Keep that order — inverting it turns every
-// carried-forward day into a false "owner touched it".
-//
-// Stats every walked path, deliberately independent of the RS_TOTAL_CAP read loop below: a
-// file dropped for size still counts as touched, and this must never under-report absence.
-const rsTouched = [];
-if (since > 0) {
-  for (const rel of rsPaths) {
-    try {
-      const st = await fs.stat(base + '/rust-dsa/' + rel);
-      if (st.mtimeMs > since) rsTouched.push(rel);
-    } catch (e) {
-      continue; // file gone — skip it, never fail the run
-    }
-  }
-}
-
-// The Spec's "empty room" test, computed once. THREE live rules key on it — whether a blank
-// `### My answer` counts as the owner's decision or as an empty room, whether to re-ask the
-// crate Q1, and (with consecutive_skips) whether a zero day is absence at all — and the runs of
-// 08-24, 08-25 and 08-26 each re-derived it by hand from these same three arrays. It is a pure
-// OR over data already gathered above, so it costs nothing and stops three prose restatements
-// of one boolean from drifting apart.
-//
-// "rustlings.done advanced" is deliberately NOT a fourth signal: an exercise only enters `done`
-// by being written AND executed by the watcher, so any advance since the cutoff already shows up
-// in reviewed_exercises. Adding it would need a cursor in `prev` and would double-count.
-const presenceSignals = [];
-if (reviewedExercises.length) presenceSignals.push('reviewed_exercises');
-if (nextExercises.some((e) => e.owner_modified)) presenceSignals.push('owner_modified');
-if (rsTouched.length) presenceSignals.push('rust_dsa.owner_touched');
-const presence = { any: presenceSignals.length > 0, signals: presenceSignals };
 
 const rustDsaFiles = [];
 let rsTotal = 0;
@@ -565,25 +904,27 @@ try {
 
 await agent(
   "Grading data is pre-fetched below — skip step 1's shell/read commands and go straight to judging yesterday's lesson against it, then write today's to lessons/<today>.md. " +
+    "MANDATORY front matter: today's file must carry a `metrics:` line — `metrics: day=<n> chess_phase=<n> dsa_topics=<n> structs_done=<n>`, the same four numbers you `loopany report --state`. It is the ONLY store for those cumulative values (the host cursor cannot hold them; see metricsOf in the workflow), so a day without the line is a day the no-agent hold gate silently declines and every absent day costs a full agent run again. prev_lesson.metrics is yesterday's, already parsed — carry each value forward and add today's increment. " +
     'prev_lesson is the file to grade (its full text, plus track_b_answer already extracted — empty means Track B was skipped); ' +
     'history is every lesson so far with its graded type; streak_before_prev is the streak over those, so your reported streak is it +1 if you grade prev_lesson done|partial, else 0; ' +
     'consecutive_skips is its mirror — the trailing run of `skipped`, also excluding prev_lesson, so add 1 yourself if you grade prev `skipped`. It is the trigger for the brief\'s "Absence, not difficulty" rule: at 3 or more, STOP shrinking the lesson and follow that section instead — shrinking is the wrong lever for someone who simply was not there, and it has already been pulled to the floor. ' +
     'presence.any is the brief\'s "empty room" test, already computed — true means the owner showed up since the last lesson (presence.signals names which of reviewed_exercises / owner_modified / rust_dsa.owner_touched fired). Do NOT re-derive it. It decides three things the brief spells out: a blank `### My answer` is the owner\'s DECISION only when presence.any is true, and an EMPTY ROOM (no decision, question stays open) when it is false; the crate Q1 is re-asked only on a day with presence; and during an absence Track B holds its concept instead of rotating forward. ' +
     'gap_days > 0 means a run FAILED and the owner got no lesson those days — say so in the opening note, never count it as their skip; ' +
     'rustlings.done lists exercises rustlings recorded as passing; cargo carries rust-dsa\'s test state. ' +
-    'cargo.ok true means cargo RAN and its per-test verdicts are trustworthy — it does NOT mean everything passed, and a failing test is the normal daily state under the chess contract, so grade from passing_tests/failing_tests and do not re-run `cargo test` yourself. cargo.ok false means the call was skipped or the crate did not compile: grading is genuinely blind, so treat it as UNKNOWN, check compile_errors, and run `cargo test` yourself. ' +
+    'cargo.ok true means cargo RAN and its per-test verdicts are trustworthy — it does NOT mean everything passed, and a failing test is the normal daily state under the chess contract, so grade from passing_tests/failing_tests and do not re-run `cargo test` yourself. cargo.ok false means the call was skipped or the crate did not compile (cargo.why says `timeout` = killed mid-build, usually a cold target/ after sleep; `skipped` = no budget left; null = real compile failure): grading is genuinely blind, so treat it as UNKNOWN, check compile_errors, and run `cargo test` yourself. ' +
     'Today\'s lesson does not exist yet — this is not a duplicate wake, that case never reaches you. ' +
-    'is_review_day true means it is SUNDAY: follow the brief\'s "Sunday · Review day" section instead of the ' +
+    'is_review_day true means it is FRIDAY: follow the brief\'s "Friday · Review day" section instead of the ' +
     'curriculum — no new concept on either track, a 5-question test as Track B and a small project as Track A, ' +
     'and grade Track A on cargo (the review_* test file) rather than on rustlings.done. ' +
     'history carries each lesson\'s title, so build the test from those titles rather than re-reading the week. ' +
-    'due_review is the spaced-repetition ladder already computed — every past lesson now sitting at its ~1w, ~4w or ~12w ' +
-    'rung, whether or not it was ever answered wrong. Draw the older questions and the small project from it; the task ' +
-    'file\'s Review queue is only the wrong-answer exceptions layered on top, and Retired items are dropped from the draw. ' +
+    'due_review is the spaced-repetition ladder already computed. Entries with source \'concept\' come from attempt records — concepts[id] holds that concept\'s level (practicing, demonstrated, retained, needs-repair), rung and due date, and they are sorted by due — take the most overdue first; entries with source \'lesson\' are lessons without attempt records, still on the old ~1w/~4w/~12w date ladder, already deduped so a stretch of held copies collapses to the one day that topic was actually served. ' +
+    'Draw the older questions and the small project from both, preferring \'lesson\' entries whose type is done|partial: a `skipped` entry was served into an empty room and never learned, so asking it as recall asks for something never seen — teach it fresh or take the next candidate instead. Drop a slot rather than padding. The task file\'s Review queue is the exception list layered on top — a concept whose level is needs-repair goes into it like a wrong answer — and Retired items are dropped from the draw. ' +
+    'When you grade prev_lesson, write its attempts: front-matter exactly as the brief\'s "Attempt records" paragraph says. prev_lesson.is_review_day says whether the lesson you are grading was a review-day lesson — it decides kind=retrieval, not today\'s weekday; prev_lesson.question_ids are the (id: …) tags its questions carry — copy those IDs, never infer one, and a question with no tag writes no line. review_id_mismatches lists retrieval attempts on review-day lessons whose id was not among that lesson\'s tags — name them in your report. unknown_ids lists attempt IDs the brief does not register — name them in your report (null means the brief was unreadable, so the check did not run); attempt_parse_errors lists record lines that did not parse — name them, never rewrite an older lesson. ' +
     'rustlings.next_exercises is the ordered slice of exercises starting AT current_exercise, straight from Cargo.toml\'s bin list (the authoritative exercise order, quizzes included), each with its path and source text. Size today\'s Track A step off it and quote its "done when" from it — never go grep the manifest or cat the sources, and never infer the order from section directory names, which is what mis-assigned lesson 5. Empty means the state file and manifest disagree: then, and only then, check the bin list yourself. ' +
     "rust_dsa is the chess crate itself — every .rs under src/ and tests/ with its path and full text, plus Cargo.toml. Write today's failing test straight into it and register any new module in the src/lib.rs text given here; never `ls -R`, `cat` or re-Read the crate to orient first. A file with truncated:true was clipped at 8KB (bytes is its real size) — Read only that one if you need its tail. Empty means the crate is unreadable: then, and only then, look yourself. " +
     "rust_dsa.owner_touched says whether the owner opened the crate at all since the last lesson (touched_paths names the files); your own edits are excluded by construction, so false with a red chess test means the step was never ATTEMPTED, not that it was too big. It is the trigger for the brief's \"The chess half is untouched, not too big\" rule — do not shrink or re-serve a step nobody opened. Write the crate edit BEFORE the lesson file, per the brief's step order, or you poison tomorrow's flag. " +
     'reviewed_exercises is the Rust the owner actually wrote since the last lesson: their code, rustlings\' official solution, and scoped clippy findings with real lint names. Open Track A with the brief\'s "Yesterday\'s code" block built from it — deep-review ONE exercise and give the rest a line each. clippy.ok false means UNKNOWN, never clean. When there is nothing worth saying, omit the block entirely rather than writing praise. ' +
+    'Apply Waitzkin\'s learning principles without changing the 15-minute budget: process before result, one smaller-circle fundamental per track, and investment-in-loss exercises on repeats or review days. Ask exactly 3–5 Socratic grill questions tied to today\'s concepts: include a failure/invariant question, a complexity or mechanism question, and an honest transfer question to the chess engine. Use soft-zone pressure only as a short optional timer, distraction, or recovery trigger; never replace compiler or test evidence. Preserve the existing Friday review-day, shrink, absence, phase-gate, and one named failing-test rules. ' +
     'Only re-read files or re-run `rustlings check-all` / `cargo test` yourself if this data looks wrong or is null.',
   {
     today,
@@ -591,6 +932,10 @@ await agent(
     is_review_day: isReviewDay,
     week_number: weekNumber,
     due_review: dueReview,
+    concepts,
+    unknown_ids: unknownIds,
+    attempt_parse_errors: attemptParseErrors,
+    review_id_mismatches: reviewIdMismatches,
     prev_lesson: prevLesson,
     history,
     streak_before_prev: streakBeforePrev,
@@ -614,6 +959,7 @@ await agent(
     },
     cargo: {
       ok: cargoOk,
+      why: cargoWhy,
       summary,
       passing_tests: passing,
       failing_tests: failing,

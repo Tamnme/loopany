@@ -32,6 +32,113 @@ const remainingMs = (reserve = BASE_RESERVE_MS) =>
 const base = '/Users/tamnm/code/personal';
 const lessonsDir = base + '/loopany/daily-lesson/lessons';
 
+// Evidence levels: per-concept attempt records in lesson front-matter, and the levels and
+// review rungs derived from them (docs/superpowers/specs/2026-10-04-evidence-levels-design.md;
+// the idea is Gnos's learner-tracking evidence model). Pure functions, no I/O, never throw —
+// the test harness slices this block out by its two marker comments, so keep them intact.
+const REVIEW_DAY = 'Friday';
+const RUNGS = [{ rung: '1w', days: 7 }, { rung: '4w', days: 28 }, { rung: '12w', days: 84 }];
+const DUE_SLACK_DAYS = 3;
+const ID_RE = /^(rs|b1|chess|ds)\.[a-z0-9_-]+$/;
+const RESULTS = ['correct', 'partial', 'incorrect'];
+const HELPS = ['none', 'hint'];
+const KINDS = ['application', 'retrieval'];
+
+const isReviewDayOn = (date, tz) =>
+  date.toLocaleDateString('en-US', { ...tz, weekday: 'long' }) === REVIEW_DAY;
+
+const daysBetween = (a, b) => (Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000;
+const addDays = (d, n) => new Date(Date.parse(d + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+
+// Front-matter only: an `attempts:` line in the lesson body is prose, not a record. CRLF is
+// normalised because lesson-web.py rewrites these files with the owner's answers.
+const parseAttempts = (text) => {
+  const attempts = [];
+  const errors = [];
+  const fm = /^---\n([\s\S]*?)\n---/.exec(text.replace(/\r\n/g, '\n'));
+  const lines = fm ? fm[1].split('\n') : [];
+  const start = lines.findIndex((l) => /^attempts:\s*$/.test(l));
+  if (start < 0) return { present: false, attempts, errors };
+  for (const line of lines.slice(start + 1)) {
+    if (!/^\s+-/.test(line)) break; // the next top-level key ends the list
+    const r = {};
+    // `key=value` is the contract; `key: value` is accepted because an agent copying YAML habits
+    // would otherwise turn every record into a parse error.
+    for (const m of line.matchAll(/(\w+)\s*[=:]\s*([^\s,]+)/g)) r[m[1]] = m[2];
+    if (ID_RE.test(r.id || '') && RESULTS.includes(r.result) && HELPS.includes(r.help) && KINDS.includes(r.kind)) {
+      attempts.push({ id: r.id, result: r.result, help: r.help, kind: r.kind });
+    } else {
+      errors.push(line.trim());
+    }
+  }
+  return { present: true, attempts, errors };
+};
+
+// Level of each concept = its latest attempt, read against whether it was EVER cleanly
+// correct before. The rung climbs only on a clean retrieval, so a hint or an application
+// never moves a concept further from review. Sort is stable: same-date records keep file order.
+const deriveConcepts = (records, today) => {
+  const out = {};
+  const prior = {};
+  const ordered = [...records].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  for (const r of ordered) {
+    const c = out[r.id] || (out[r.id] = { level: null, rung: 0, last_date: null });
+    const clean = r.result === 'correct' && r.help === 'none';
+    if (clean && r.kind === 'retrieval' && prior[r.id]) {
+      c.level = 'retained';
+      c.rung = Math.min(c.rung + 1, RUNGS.length - 1);
+    } else if (clean) {
+      c.level = 'demonstrated';
+    } else if (r.result === 'incorrect' && prior[r.id]) {
+      c.level = 'needs-repair';
+    } else {
+      c.level = 'practicing';
+    }
+    if (clean) prior[r.id] = true;
+    c.last_date = r.date;
+  }
+  for (const c of Object.values(out)) {
+    c.due = addDays(c.last_date, RUNGS[c.rung].days);
+    // Overdue stays due: the due date only moves on a new attempt, so a strict window would
+    // drop a concept for good after one failed review-day run.
+    c.is_due = daysBetween(today, c.due) <= DUE_SLACK_DAYS;
+  }
+  return out;
+};
+
+// The pre-cutover ladder, unchanged: every graded lesson comes back at ~1, ~4 and ~12 weeks.
+// Windows are ±3 days so a rung can't be missed by landing between two review days. Lessons
+// that carry attempt records are skipped — their concepts are on the concept ladder instead.
+const lessonLadder = (history, today, skip) => {
+  const due = [];
+  for (const h of history) {
+    if (h.type === 'assigned' || skip.has(h.date)) continue; // never taught-and-graded yet
+    const age = daysBetween(h.date, today);
+    for (const r of RUNGS) {
+      if (Math.abs(age - r.days) <= DUE_SLACK_DAYS) {
+        due.push({ date: h.date, title: h.title, type: h.type, rung: r.rung, age_days: age, source: 'lesson' });
+      }
+    }
+  }
+  return due;
+};
+
+// The README is the ID registry: every ID written in backticks. rustlings IDs are not listed
+// there — `rs.<name>` is valid when <name> is in rustlings' own bin list.
+const conceptIdsIn = (readme) =>
+  new Set([...readme.matchAll(/`((?:rs|b1|chess|ds)\.[a-z0-9_-]+)`/g)].map((m) => m[1]));
+
+// null means the README could not be read, so the check never ran — that must not read as
+// "no unknown IDs".
+const unknownIdsOf = (concepts, readme, binNames) => {
+  if (readme === null) return null;
+  const known = conceptIdsIn(readme);
+  return Object.keys(concepts).filter(
+    (id) => !known.has(id) && !(id.startsWith('rs.') && binNames.includes(id.slice(3))),
+  );
+};
+// End evidence levels.
+
 // Today in the owner's timezone. The run fires at 09:00 Asia/Saigon (cron `0 9 * * *`);
 // Asia/Ho_Chi_Minh is the same zone, kept here as the canonical IANA name.
 const tz = { timeZone: 'Asia/Ho_Chi_Minh' };
@@ -79,7 +186,6 @@ const weekNumber = history.length
 // not just the ones answered wrong. A review day draws its questions from this; the
 // wrong-answer queue in the task file is only the exception list on top of it.
 // Windows are ±3 days so a rung can't be missed by landing between two Sundays.
-const RUNGS = [{ rung: '1w', days: 7 }, { rung: '4w', days: 28 }, { rung: '12w', days: 84 }];
 const dueReview = [];
 for (const h of history) {
   if (h.type === 'assigned') continue; // never taught-and-graded yet

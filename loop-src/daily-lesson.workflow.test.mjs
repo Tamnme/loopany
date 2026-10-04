@@ -727,3 +727,175 @@ test('capWarnings keeps every error even when errors alone exceed the cap', asyn
 });
 
 export { runWorkflow };
+
+// The evidence-levels block is extracted straight out of the real source by its marker
+// comments (same technique as loadTimingModule) so these test the functions the workflow runs.
+async function loadEvidenceModule() {
+  const body = await fs.readFile(SRC, 'utf8');
+  const start = body.indexOf('// Evidence levels:');
+  const end = body.indexOf('// End evidence levels.');
+  if (start === -1 || end === -1) {
+    throw new Error('Could not locate the evidence-levels block in the workflow source');
+  }
+  const wrapped = `${body.slice(start, end)}\nexport { REVIEW_DAY, RUNGS, parseAttempts, deriveConcepts, lessonLadder, conceptIdsIn, unknownIdsOf, isReviewDayOn };\n`;
+  const tmp = path.join(here, `.wf.evidence.harness.${Date.now()}.${Math.random().toString(36).slice(2)}.mjs`);
+  await fs.writeFile(tmp, wrapped);
+  try {
+    return await import(tmp + '?t=' + process.hrtime.bigint());
+  } finally {
+    await fs.rm(tmp, { force: true });
+  }
+}
+
+const rec = (date, id, result, help, kind) => ({ date, id, result, help, kind });
+
+test('parseAttempts reads front-matter records only, in both key=value and key: value form, across CRLF', async () => {
+  const { parseAttempts } = await loadEvidenceModule();
+  // Shape copied from a real lesson's front-matter (lessons/2026-10-01.md), plus attempts.
+  const lesson = [
+    '---',
+    'type: done',
+    'title: "Lesson 51 · Rust: x · DSA: y"',
+    'date: 2026-10-02',
+    'metrics: day=51 chess_phase=1 dsa_topics=17 structs_done=1',
+    'attempts:',
+    '  - id=b1.alpha-beta result=correct help=none kind=application',
+    '  - id: rs.errors2 result: partial help: hint kind: application',
+    '  - id=B1.Alpha result=correct help=none kind=application',
+    '  - id=b1.minimax result=maybe help=none kind=application',
+    'answered_at: 2026-10-02',
+    '---',
+    '',
+    '# Lesson 51',
+    'attempts:',
+    '  - id=b1.zobrist result=correct help=none kind=application',
+    '',
+  ].join('\r\n');
+  const p = parseAttempts(lesson);
+  assert.equal(p.present, true);
+  assert.deepEqual(p.attempts, [
+    { id: 'b1.alpha-beta', result: 'correct', help: 'none', kind: 'application' },
+    { id: 'rs.errors2', result: 'partial', help: 'hint', kind: 'application' },
+  ]);
+  assert.deepEqual(p.errors, [
+    '- id=B1.Alpha result=correct help=none kind=application',
+    '- id=b1.minimax result=maybe help=none kind=application',
+  ]);
+});
+
+test('parseAttempts on a pre-cutover lesson: present false, nothing parsed, never throws', async () => {
+  const { parseAttempts } = await loadEvidenceModule();
+  assert.deepEqual(parseAttempts('---\ntype: done\n---\n### My answer\nx\n'), { present: false, attempts: [], errors: [] });
+  assert.deepEqual(parseAttempts('no front-matter at all'), { present: false, attempts: [], errors: [] });
+});
+
+test('deriveConcepts: every level transition', async () => {
+  const { deriveConcepts } = await loadEvidenceModule();
+  const c = deriveConcepts([
+    rec('2026-10-01', 'b1.a', 'correct', 'none', 'application'),
+    rec('2026-10-01', 'b1.b', 'correct', 'hint', 'application'),
+    rec('2026-09-01', 'b1.c', 'correct', 'none', 'application'),
+    rec('2026-09-08', 'b1.c', 'correct', 'none', 'retrieval'),
+    rec('2026-09-01', 'b1.d', 'correct', 'none', 'application'),
+    rec('2026-09-08', 'b1.d', 'correct', 'none', 'application'),
+    rec('2026-09-01', 'b1.e', 'correct', 'none', 'application'),
+    rec('2026-09-08', 'b1.e', 'incorrect', 'none', 'retrieval'),
+    rec('2026-10-01', 'b1.f', 'incorrect', 'none', 'application'),
+    rec('2026-09-01', 'b1.g', 'correct', 'none', 'application'),
+    rec('2026-09-08', 'b1.g', 'partial', 'none', 'retrieval'),
+    rec('2026-10-01', 'b1.k', 'correct', 'none', 'retrieval'),
+  ], '2026-10-04');
+  assert.equal(c['b1.a'].level, 'demonstrated');
+  assert.equal(c['b1.b'].level, 'practicing', 'a hinted correct is not independent');
+  assert.equal(c['b1.c'].level, 'retained', 'clean retrieval after an earlier clean success');
+  assert.equal(c['b1.d'].level, 'demonstrated', 'a second application is not retrieval');
+  assert.equal(c['b1.e'].level, 'needs-repair', 'was demonstrated, latest incorrect');
+  assert.equal(c['b1.f'].level, 'practicing', 'incorrect without an earlier success is not a repair');
+  assert.equal(c['b1.g'].level, 'practicing', 'partial after a success is practicing, not needs-repair');
+  assert.equal(c['b1.k'].level, 'demonstrated', 'a first-ever clean retrieval has nothing to have retained');
+  assert.equal(c['b1.k'].rung, 0);
+  assert.deepEqual(Object.keys(c['b1.a']).sort(), ['due', 'is_due', 'last_date', 'level', 'rung']);
+});
+
+test('deriveConcepts: rung advances only on a clean retrieval, holds otherwise, caps at 12w', async () => {
+  const { deriveConcepts } = await loadEvidenceModule();
+  const c = deriveConcepts([
+    rec('2026-10-01', 'b1.a', 'correct', 'none', 'application'),
+    rec('2026-09-01', 'b1.c', 'correct', 'none', 'application'),
+    rec('2026-09-08', 'b1.c', 'correct', 'none', 'retrieval'),
+    rec('2026-09-01', 'b1.i', 'correct', 'none', 'application'),
+    rec('2026-09-08', 'b1.i', 'correct', 'none', 'retrieval'),
+    rec('2026-10-06', 'b1.i', 'correct', 'hint', 'retrieval'),
+    ...['2026-01-01', '2026-01-08', '2026-02-05', '2026-04-30', '2026-07-23'].map((d, n) =>
+      rec(d, 'b1.h', 'correct', 'none', n === 0 ? 'application' : 'retrieval')),
+  ], '2026-10-04');
+  assert.equal(c['b1.a'].rung, 0);
+  assert.equal(c['b1.a'].due, '2026-10-08');
+  assert.equal(c['b1.c'].rung, 1);
+  assert.equal(c['b1.c'].due, '2026-10-06');
+  assert.equal(c['b1.i'].rung, 1, 'a hinted retrieval keeps the rung');
+  assert.equal(c['b1.i'].due, '2026-11-03', 'and restarts the clock from that attempt');
+  assert.equal(c['b1.h'].rung, 2, 'never past 12w');
+});
+
+test('deriveConcepts: due from 3 days before, overdue stays due', async () => {
+  const { deriveConcepts } = await loadEvidenceModule();
+  const c = deriveConcepts([
+    rec('2026-10-01', 'b1.later', 'correct', 'none', 'application'), // due 10-08: 4 days out
+    rec('2026-09-30', 'b1.edge', 'correct', 'none', 'application'), // due 10-07: 3 days out
+    rec('2026-08-01', 'b1.over', 'correct', 'none', 'application'), // due 08-08: long overdue
+  ], '2026-10-04');
+  assert.equal(c['b1.later'].is_due, false);
+  assert.equal(c['b1.edge'].is_due, true);
+  assert.equal(c['b1.over'].is_due, true);
+});
+
+test('deriveConcepts: date order wins across dates, file order wins within one date', async () => {
+  const { deriveConcepts } = await loadEvidenceModule();
+  const sameDayA = deriveConcepts([
+    rec('2026-10-01', 'b1.x', 'correct', 'none', 'application'),
+    rec('2026-10-01', 'b1.x', 'incorrect', 'none', 'retrieval'),
+  ], '2026-10-04');
+  assert.equal(sameDayA['b1.x'].level, 'needs-repair');
+  const sameDayB = deriveConcepts([
+    rec('2026-10-01', 'b1.x', 'incorrect', 'none', 'retrieval'),
+    rec('2026-10-01', 'b1.x', 'correct', 'none', 'application'),
+  ], '2026-10-04');
+  assert.equal(sameDayB['b1.x'].level, 'demonstrated');
+  const unsorted = deriveConcepts([
+    rec('2026-09-08', 'b1.y', 'correct', 'none', 'retrieval'),
+    rec('2026-09-01', 'b1.y', 'correct', 'none', 'application'),
+  ], '2026-10-04');
+  assert.equal(unsorted['b1.y'].level, 'retained');
+});
+
+test('lessonLadder keeps the old date ladder, tagged, and skips lessons that carry attempts', async () => {
+  const { lessonLadder } = await loadEvidenceModule();
+  const history = [
+    { date: '2026-09-26', type: 'done', title: 'B' },
+    { date: '2026-09-27', type: 'done', title: 'A' },
+    { date: '2026-09-28', type: 'assigned', title: 'C' },
+  ];
+  assert.deepEqual(lessonLadder(history, '2026-10-04', new Set(['2026-09-26'])), [
+    { date: '2026-09-27', title: 'A', type: 'done', rung: '1w', age_days: 7, source: 'lesson' },
+  ]);
+  assert.equal(lessonLadder(history, '2026-10-04', new Set()).length, 2, 'without the skip, 09-26 (age 8) is due too');
+});
+
+test('conceptIdsIn / unknownIdsOf: README registry, rustlings bin list, and null when unreadable', async () => {
+  const { conceptIdsIn, unknownIdsOf } = await loadEvidenceModule();
+  const readme = '| alpha-beta | `b1.alpha-beta` |\n| phase 2 `chess.p2` |\nprose b1.minimax without backticks\n`ds::Vec`';
+  assert.deepEqual([...conceptIdsIn(readme)].sort(), ['b1.alpha-beta', 'chess.p2']);
+  const concepts = { 'b1.alpha-beta': {}, 'b1.minimax': {}, 'rs.errors2': {}, 'rs.nope9': {} };
+  assert.deepEqual(unknownIdsOf(concepts, readme, ['errors1', 'errors2']), ['b1.minimax', 'rs.nope9']);
+  assert.equal(unknownIdsOf(concepts, null, ['errors2']), null, 'unreadable README = check did not run, not "no unknowns"');
+});
+
+test('isReviewDayOn is Friday in Asia/Ho_Chi_Minh, not UTC', async () => {
+  const { isReviewDayOn, REVIEW_DAY } = await loadEvidenceModule();
+  const tz = { timeZone: 'Asia/Ho_Chi_Minh' };
+  assert.equal(REVIEW_DAY, 'Friday');
+  assert.equal(isReviewDayOn(new Date('2026-10-09T02:00:00Z'), tz), true, '09:00 Friday local');
+  assert.equal(isReviewDayOn(new Date('2026-10-08T17:30:00Z'), tz), true, '00:30 Friday local, still Thursday in UTC');
+  assert.equal(isReviewDayOn(new Date('2026-10-11T02:00:00Z'), tz), false, 'Sunday is a normal day now');
+});

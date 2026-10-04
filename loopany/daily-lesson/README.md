@@ -206,10 +206,14 @@ Never run `cargo`, `rustlings`, or create a checkout inside `loopany/`.
 
    `id` is the concept's ID (see *Concept IDs*). `result` is `correct`, `partial` or
    `incorrect`: Track A and B2 from `rustlings.done` / `cargo`, never your impression; B1 from
-   `### My answer`. `help` is `none` on a first serve and `hint` when the concept was re-served,
-   shrunk or held. `kind` is `retrieval` on review day or a ladder re-ask, otherwise
-   `application`. A skipped track writes **no** line — no attempt is not an `incorrect`. Never
-   edit an older lesson's attempts. The workflow derives each concept's level from these.
+   `### My answer`. `help` is `hint` only when the concept was re-**taught** before this
+   attempt — held, repeated after a skip, or shrunk; otherwise `none`, including a first serve.
+   A review-day or ladder re-ask is **always** `help=none`: it is a retrieval, not help.
+   `kind` is `retrieval` on review day or a ladder re-ask, otherwise `application`. On a review
+   day, copy each `id` from the `(id: …)` written next to its question (see *Friday · Review
+   day*) — never infer it. A skipped track writes **no** line — no attempt is not an
+   `incorrect`. Never edit an older lesson's attempts. The workflow derives each concept's
+   level from these.
 2. **Friday?** Then skip to the *Friday · Review day* section — no new concepts today, and no
    curriculum advance on either track. Otherwise **pick today's two steps** — see
    *Curriculum*, adapting per track **independently**. A track that was skipped re-teaches the
@@ -497,7 +501,8 @@ the detail.
 **Concept IDs.** Every concept has an ID in backticks: `b1.<slug>`, `ds.<struct>`,
 `chess.p<n>`, and `rs.<exercise>` for rustlings (the exercise name itself — not listed here,
 the workflow checks it against rustlings' bin list). **An ID is never renamed or reused:** a
-renamed concept gets a new ID and the old one stays. The workflow reads IDs out of this file;
+renamed concept gets a new ID and the old one stays. A row added to a curriculum table gets its
+ID in the same edit. The workflow reads IDs out of this file;
 an attempt naming one it cannot find comes back in `unknown_ids`.
 
 **Curriculum.**
@@ -564,7 +569,11 @@ in step 3 apply unchanged.
   the wrong-answer queue** (or a sixth due item when the queue is empty). Questions may be
   Rust *or* DSA — both tracks are knowledge, and the title of each lesson carries both. Drop
   a slot the loop is too young to fill; never pad to five. Same collapsed worked answer below
-  the block, same grading next run.
+  the block, same grading next run. **Write each question's concept ID next to it**, e.g.
+  `(id: b1.zobrist)`. For a `source: lesson` entry whose title names no single registered
+  concept, use this brief's registered ID for its DSA concept; never invent `rs.<topic>` IDs
+  (rustlings IDs are exercise names only). Grading copies the IDs from the questions — it
+  never infers them.
 - **Track A · Friday is where the four non-chess structures get built.** This is the whole
   reason `Queue`, `LinkedList`, `BST` and `Graph` still exist in the goal. One per Friday,
   in that order, once its B1 theory is banked and the Rust it needs is taught (`LinkedList`
@@ -585,8 +594,8 @@ in step 3 apply unchanged.
   ~1 → ~4 → ~12 weeks **only** when answered `correct` with `help=none` as a `retrieval`;
   anything else keeps its rung and restarts the clock, and an overdue concept stays due until
   it is asked. `concepts[id].level` says where it stands — `practicing`, `demonstrated`,
-  `retained`, or `needs-repair` (was solid, now wrong). `source: lesson` is a lesson from
-  before attempt records existed, still on the old date ladder (~1, ~4, ~12 weeks after it was
+  `retained`, or `needs-repair` (was solid, now wrong). Concept entries come most overdue
+  first — take them in that order. `source: lesson` is a lesson without attempt records, still on the old date ladder (~1, ~4, ~12 weeks after it was
   taught). Nothing needs writing down for an item that is simply being reviewed on time.
 - **The wrong-answer queue is the exception list**, not the mechanism. Two deviations from
   the ladder, both recorded in *Current understanding*:
@@ -634,6 +643,7 @@ block at the top of `## Track A · Rust`, above today's assignment, inside its 2
 
 ## Current understanding
 
+- 2026-10-04 — review day moved Sunday → Friday; `ds::Graph` (due 10-04) is now due Friday 10-09.
 - **Position (2026-10-01, lesson 50).** `presence.any` false, `gap_days` 0. Lesson 49 graded
   **skipped**; streak 0, `consecutive_skips` now **3**, so the **_Absence_ rule is live**: hold
   everything at its current size and don't shrink. On the first day with presence, rotate
@@ -756,7 +766,7 @@ block at the top of `## Track A · Rust`, above today's assignment, inside its 2
     is still a losing move. Corrected in 26's opening note. Added 2026-08-27.
   - **Memoization vs tabulation — parked, not answered wrong.** Served 08-22, 08-23 (Q2) and
     08-24, blank every time; parked 2026-08-25 under the three-serve cap so Track B could rotate
-    forward. Draw it on a Sunday as a *question*, not a fourth lesson.
+    forward. Draw it on a Friday as a *question*, not a fourth lesson.
   - **Heaps · what an insert does** — lesson 11 Q1, produced a *sorted* array
     (`[2,3,4,5,8,9]`). A heap is not sorted; insert appends at the end and sifts up one path
     (`[2,5,3,8,9,4]`). Corrected in 12's opening note. Added 2026-08-11.

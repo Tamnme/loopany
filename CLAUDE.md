@@ -6,7 +6,7 @@ things that bite.
 ## Commands
 
 ```bash
-cd loop-src && node --test        # 45 tests. Baseline is 42 pass / 3 fail (see below), not 45/0.
+cd loop-src && node --test        # 58 tests. Baseline is 55 pass / 3 fail (see below), not 58/0.
 npx @crewlet/loopany@latest edit <loop-id> --workflow-file daily-lesson.workflow.js --dry-run
 ```
 

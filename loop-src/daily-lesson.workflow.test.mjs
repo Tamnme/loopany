@@ -1049,3 +1049,31 @@ test('the prompt names Friday and the new payload keys, and no longer says Sunda
   }
   assert.ok(!/Sunday|SUNDAY/.test(prompt), 'prompt still mentions Sunday');
 });
+
+test('lessonLadder dedupes held copies of one topic per rung, keeping the earliest serve', async () => {
+  const { lessonLadder } = await loadEvidenceModule();
+  const history = [
+    { date: '2026-09-26', type: 'skipped', title: '"Lesson 44 · Rust: errors4 · DSA: Zobrist hashing"' },
+    { date: '2026-09-27', type: 'skipped', title: '"Lesson 45 · Rust: errors4 · DSA: Zobrist hashing"' },
+    { date: '2026-09-28', type: 'done', title: '"Lesson 46 · Rust: errors5 · DSA: iterative deepening"' },
+  ];
+  const due = lessonLadder(history, '2026-10-04', new Set());
+  const zob = due.filter((d) => d.title.includes('Zobrist'));
+  assert.equal(zob.length, 1, 'two held copies of one topic on the same rung count once');
+  assert.equal(zob[0].date, '2026-09-26', 'the earliest serve wins');
+  assert.equal(due.filter((d) => d.title.includes('iterative')).length, 1, 'a different topic is kept');
+  assert.ok(due.every((d) => d.source === 'lesson'));
+});
+
+test('payload cargo carries why (null on a normal run)', async () => {
+  const p = await runWorkflow();
+  assert.ok('why' in p.cargo, 'cargo.why missing from the payload');
+});
+
+test('the prompt explains cargo.why and the done|partial preference for lesson-ladder entries', async () => {
+  const src = await fs.readFile(SRC, 'utf8');
+  const prompt = src.slice(src.search(/^await agent\(/m));
+  for (const s of ['cargo.why', 'done|partial', 'held copies', 'Drop a slot rather than']) {
+    assert.ok(prompt.includes(s), `prompt is missing ${s}`);
+  }
+});

@@ -109,18 +109,34 @@ const deriveConcepts = (records, today) => {
 // The pre-cutover ladder, unchanged: every graded lesson comes back at ~1, ~4 and ~12 weeks.
 // Windows are ±3 days so a rung can't be missed by landing between two review days. Lessons
 // that carry attempt records are skipped — their concepts are on the concept ladder instead.
+//
+// A held day copies the previous weekday lesson verbatim and only bumps the lesson NUMBER, so
+// the ladder sees N separate "lessons" that are one concept served once. Measured 2026-09-17:
+// Sunday 09-20's 1w rung was SIX byte-identical held copies of the 08-27 Zobrist lesson plus one
+// skipped Sunday — 14 due items of which 10 carried no information. The absence makes it worse
+// weekly, because today's held copies reach the 4w rung a month from now.
+// Dedupe on the topic (the title with its `Lesson N ·` / `Review week N ·` prefix stripped),
+// per rung, keeping the EARLIEST date — the day that topic was actually served. Purely
+// mechanical; which of the survivors is worth asking stays the run's judgment.
+const topicOf = (title) =>
+  (title || '').replace(/^"?(?:Lesson|Review week)\s+\d+\s*·\s*/, '').trim();
 const lessonLadder = (history, today, skip) => {
-  const due = [];
-  for (const h of history) {
+  const dueSeen = new Map();
+  // Sorted by date ascending so the first hit for a key is the earliest serve, whatever the
+  // caller's order.
+  const sorted = [...history].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  for (const h of sorted) {
     if (h.type === 'assigned' || skip.has(h.date)) continue; // never taught-and-graded yet
     const age = daysBetween(h.date, today);
     for (const r of RUNGS) {
       if (Math.abs(age - r.days) <= DUE_SLACK_DAYS) {
-        due.push({ date: h.date, title: h.title, type: h.type, rung: r.rung, age_days: age, source: 'lesson' });
+        const key = r.rung + '\u0000' + topicOf(h.title);
+        if (dueSeen.has(key)) continue;
+        dueSeen.set(key, { date: h.date, title: h.title, type: h.type, rung: r.rung, age_days: age, source: 'lesson' });
       }
     }
   }
-  return due;
+  return [...dueSeen.values()];
 };
 
 // The README is the ID registry: every ID written in backticks. rustlings IDs are not listed
@@ -730,6 +746,7 @@ const FEEDBACK_LOOP_RESERVE_MS = 3000;
 
 let out = '';
 let cargoOk = false;
+let cargoWhy = null; // why ok is false when it isn't a compile failure: 'timeout' | 'skipped'
 const cargoBudgetMs = Math.min(CARGO_TEST_HARD_CAP_MS, remainingMs(BASE_RESERVE_MS + FEEDBACK_LOOP_RESERVE_MS));
 // child_process's `timeout: 0` means NO TIMEOUT, not "no time left" — passing 0 or a negative
 // number here would silently reopen the exact bug this closes (an unbounded call that can blow
@@ -756,7 +773,14 @@ if (cargoBudgetMs > 0) {
     // `test result:` line at all, so it still lands on ok:false — which is exactly right, because
     // that is the case where grading really is blind.
     cargoOk = /^test (?:\S+ \.\.\. (?:ok|FAILED)|result:)/m.test(out);
+    // 2026-09-25: target/ had vanished, so the prefetch hit a cold build right after a wake from
+    // sleep, got killed at its budget, and handed over ok:false with every field empty — which
+    // reads exactly like a crate that won't compile. Name the kill so the run knows it's a cold
+    // build, not broken code.
+    if (e.killed || e.signal) cargoWhy = 'timeout';
   }
+} else {
+  cargoWhy = 'skipped';
 }
 
 const passing = [...out.matchAll(/^test (\S+) \.\.\. ok$/gm)].map((m) => m[1]);
@@ -845,14 +869,14 @@ await agent(
     'presence.any is the brief\'s "empty room" test, already computed — true means the owner showed up since the last lesson (presence.signals names which of reviewed_exercises / owner_modified / rust_dsa.owner_touched fired). Do NOT re-derive it. It decides three things the brief spells out: a blank `### My answer` is the owner\'s DECISION only when presence.any is true, and an EMPTY ROOM (no decision, question stays open) when it is false; the crate Q1 is re-asked only on a day with presence; and during an absence Track B holds its concept instead of rotating forward. ' +
     'gap_days > 0 means a run FAILED and the owner got no lesson those days — say so in the opening note, never count it as their skip; ' +
     'rustlings.done lists exercises rustlings recorded as passing; cargo carries rust-dsa\'s test state. ' +
-    'cargo.ok true means cargo RAN and its per-test verdicts are trustworthy — it does NOT mean everything passed, and a failing test is the normal daily state under the chess contract, so grade from passing_tests/failing_tests and do not re-run `cargo test` yourself. cargo.ok false means the call was skipped or the crate did not compile: grading is genuinely blind, so treat it as UNKNOWN, check compile_errors, and run `cargo test` yourself. ' +
+    'cargo.ok true means cargo RAN and its per-test verdicts are trustworthy — it does NOT mean everything passed, and a failing test is the normal daily state under the chess contract, so grade from passing_tests/failing_tests and do not re-run `cargo test` yourself. cargo.ok false means the call was skipped or the crate did not compile (cargo.why says `timeout` = killed mid-build, usually a cold target/ after sleep; `skipped` = no budget left; null = real compile failure): grading is genuinely blind, so treat it as UNKNOWN, check compile_errors, and run `cargo test` yourself. ' +
     'Today\'s lesson does not exist yet — this is not a duplicate wake, that case never reaches you. ' +
     'is_review_day true means it is FRIDAY: follow the brief\'s "Friday · Review day" section instead of the ' +
     'curriculum — no new concept on either track, a 5-question test as Track B and a small project as Track A, ' +
     'and grade Track A on cargo (the review_* test file) rather than on rustlings.done. ' +
     'history carries each lesson\'s title, so build the test from those titles rather than re-reading the week. ' +
-    'due_review is the spaced-repetition ladder already computed. Entries with source \'concept\' come from attempt records — concepts[id] holds that concept\'s level (practicing, demonstrated, retained, needs-repair), rung and due date; entries with source \'lesson\' are lessons from before attempt records existed, still on the old ~1w/~4w/~12w date ladder. ' +
-    'Draw the older questions and the small project from both; the task file\'s Review queue is the exception list layered on top — a concept whose level is needs-repair goes into it like a wrong answer — and Retired items are dropped from the draw. ' +
+    'due_review is the spaced-repetition ladder already computed. Entries with source \'concept\' come from attempt records — concepts[id] holds that concept\'s level (practicing, demonstrated, retained, needs-repair), rung and due date; entries with source \'lesson\' are lessons from before attempt records existed, still on the old ~1w/~4w/~12w date ladder, already deduped so a stretch of held copies collapses to the one day that topic was actually served. ' +
+    'Draw the older questions and the small project from both, preferring \'lesson\' entries whose type is done|partial: a `skipped` entry was served into an empty room and never learned, so asking it as recall asks for something never seen — teach it fresh or take the next candidate instead. Drop a slot rather than padding. The task file\'s Review queue is the exception list layered on top — a concept whose level is needs-repair goes into it like a wrong answer — and Retired items are dropped from the draw. ' +
     'When you grade prev_lesson, write its attempts: front-matter exactly as the brief\'s "Attempt records" paragraph says. unknown_ids lists attempt IDs the brief does not register — name them in your report (null means the brief was unreadable, so the check did not run); attempt_parse_errors lists record lines that did not parse — name them, never rewrite an older lesson. ' +
     'rustlings.next_exercises is the ordered slice of exercises starting AT current_exercise, straight from Cargo.toml\'s bin list (the authoritative exercise order, quizzes included), each with its path and source text. Size today\'s Track A step off it and quote its "done when" from it — never go grep the manifest or cat the sources, and never infer the order from section directory names, which is what mis-assigned lesson 5. Empty means the state file and manifest disagree: then, and only then, check the bin list yourself. ' +
     "rust_dsa is the chess crate itself — every .rs under src/ and tests/ with its path and full text, plus Cargo.toml. Write today's failing test straight into it and register any new module in the src/lib.rs text given here; never `ls -R`, `cat` or re-Read the crate to orient first. A file with truncated:true was clipped at 8KB (bytes is its real size) — Read only that one if you need its tail. Empty means the crate is unreadable: then, and only then, look yourself. " +
@@ -892,6 +916,7 @@ await agent(
     },
     cargo: {
       ok: cargoOk,
+      why: cargoWhy,
       summary,
       passing_tests: passing,
       failing_tests: failing,
